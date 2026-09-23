@@ -83,13 +83,11 @@ async def check_all_subs(user_id, ch_type, for_confirm=False):
         return True, []
 
     all_green_ok = True
-    has_green = False
     for ch in channels:
         chat_id = ch[1]
         bot_admin = ch[4] if len(ch) > 4 else 0
         if not bot_admin:
             continue
-        has_green = True
         ok = await check_sub(user_id, chat_id, True)
         if not ok:
             all_green_ok = False
@@ -107,9 +105,8 @@ async def check_all_subs(user_id, ch_type, for_confirm=False):
 async def on_join_request(request: ChatJoinRequest):
     try:
         save_join_request(request.from_user.id, request.chat.id)
-        print(f"Заявка: user {request.from_user.id} -> chat {request.chat.id}")
-    except Exception as e:
-        print("join_request error:", e)
+    except Exception:
+        pass
 
 
 # ============ СТАРТ ============
@@ -548,29 +545,34 @@ async def add_ch_link(message: Message, state: FSMContext):
     data = await state.get_data()
     ch_type = data.get("ch_type", "start")
 
+    # Пересланное сообщение из канала
     if message.forward_from_chat:
         fwd = message.forward_from_chat
         chat_id = str(fwd.id)
         title = fwd.title or f"Канал {chat_id}"
         link = f"https://t.me/{fwd.username}" if fwd.username else ""
 
-        print("=== ADD CHANNEL DEBUG ===")
-        print(f"forward_from_chat.id: {fwd.id}")
-        print(f"forward_from_chat.title: {fwd.title}")
-        print(f"forward_from_chat.type: {fwd.type}")
-        print(f"forward_from_chat.username: {fwd.username}")
-        print(f"bot.id: {bot.id}")
-
         bot_admin = 0
+        debug = (
+            f"🔍 <b>ОТЛАДКА</b>\n\n"
+            f"📢 Канал: {title}\n"
+            f"🆔 ID: <code>{chat_id}</code>\n"
+            f"📁 Тип: {fwd.type}\n"
+            f"🤖 Bot ID: <code>{bot.id}</code>\n\n"
+        )
         try:
             member = await bot.getChatMember(fwd.id, bot.id)
-            print(f"getChatMember status: {member.status}")
+            debug += f"✅ Статус бота: <b>{member.status}</b>"
             if member.status in ("administrator", "creator"):
                 bot_admin = 1
         except Exception as e:
-            print(f"getChatMember ОШИБКА: {e}")
-        print(f"bot_admin = {bot_admin}")
-        print("=== END DEBUG ===")
+            debug += f"❌ Ошибка getChatMember:\n<code>{e}</code>"
+
+        # Отправляем отладку тебе в личку
+        try:
+            await bot.send_message(ADMIN_ID, debug, parse_mode="HTML")
+        except Exception:
+            pass
 
         add_channel(chat_id, title, link, ch_type, bot_admin)
         status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
