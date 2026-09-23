@@ -35,6 +35,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+# ============ СОСТОЯНИЯ ============
 class AddChannel(StatesGroup):
     waiting_link = State()
     waiting_title = State()
@@ -58,6 +59,7 @@ class WithdrawFlow(StatesGroup):
     waiting_sub = State()
 
 
+# ============ ПОДПИСКА ============
 async def check_sub(user_id, chat_id, bot_admin=True):
     if not bot_admin:
         return True
@@ -77,17 +79,27 @@ async def check_sub(user_id, chat_id, bot_admin=True):
 
 async def check_all_subs(user_id, ch_type):
     channels = get_channels(ch_type)
+    if not channels:
+        return True, []
+
+    all_green_ok = True
     for ch in channels:
         chat_id = ch[1]
         bot_admin = ch[4] if len(ch) > 4 else 0
-        ok = await check_sub(user_id, chat_id, bool(bot_admin))
+        if not bot_admin:
+            continue
+        ok = await check_sub(user_id, chat_id, True)
         if not ok:
-            return False, channels
-        if bot_admin:
+            all_green_ok = False
+        else:
             track_channel_join(chat_id, user_id)
+
+    if not all_green_ok:
+        return False, channels
     return True, channels
 
 
+# ============ ЗАЯВКА В КАНАЛ ============
 @dp.chat_join_request()
 async def on_join_request(request: ChatJoinRequest):
     try:
@@ -97,6 +109,7 @@ async def on_join_request(request: ChatJoinRequest):
         print("join_request error:", e)
 
 
+# ============ СТАРТ ============
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -159,6 +172,7 @@ async def cb_check_sub(call: CallbackQuery):
     await call.message.answer(welcome, reply_markup=main_menu())
 
 
+# ============ ЗАРАБОТАТЬ ============
 @dp.message(F.text == "⭐ Заработать звёзды")
 async def earn(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -194,6 +208,7 @@ async def earn(message: Message):
     await message.answer(text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
 
+# ============ ЛИДЕРЫ ============
 @dp.message(F.text == "🏆 Лидеры")
 async def leaders(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -213,6 +228,7 @@ async def leaders(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
+# ============ ПРОФИЛЬ ============
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -295,6 +311,7 @@ async def user_promo_check(message: Message, state: FSMContext):
         await message.answer(msg)
 
 
+# ============ ВЫВОД ============
 @dp.message(F.text == "💸 Вывести звёзды")
 async def withdraw(message: Message, state: FSMContext):
     await state.clear()
@@ -415,6 +432,7 @@ async def create_order(call: CallbackQuery, key):
         print("Ошибка отправки админу:", e)
 
 
+# ============ АДМИНКА ============
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -448,6 +466,7 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
+# --- каналы ---
 @dp.callback_query(F.data.startswith("ch_list:"))
 async def ch_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -696,6 +715,7 @@ async def ch_clear(call: CallbackQuery):
     )
 
 
+# --- заявки ---
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -779,6 +799,7 @@ async def wd_no(call: CallbackQuery):
         pass
 
 
+# --- промокоды ---
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -878,6 +899,7 @@ async def promo_delete_step(message: Message, state: FSMContext):
     await message.answer(f"🗑 Промокод <code>{code}</code> удалён.", parse_mode="HTML")
 
 
+# --- статистика ---
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -903,6 +925,7 @@ async def stats(call: CallbackQuery):
     )
 
 
+# --- настройки ---
 @dp.callback_query(F.data == "settings")
 async def settings(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -952,6 +975,7 @@ async def set_value_save(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {key} = {value}", reply_markup=back_admin_kb())
 
 
+# ============ ФОНОВЫЕ ЗАДАЧИ ============
 async def referral_watcher():
     while True:
         try:
@@ -991,6 +1015,7 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
+# ============ ЗАПУСК ============
 async def main():
     init_db()
     asyncio.create_task(referral_watcher())
