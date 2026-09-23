@@ -3,7 +3,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 
-from config import GIFTS, GIFTS_ORDER, PRIVATKA_URL
+from config import GIFTS, GIFTS_ORDER
 from database import get_channels
 
 
@@ -13,13 +13,6 @@ def main_menu():
         [KeyboardButton(text="⭐ Заработать звёзды")],
         [KeyboardButton(text="💸 Вывести звёзды")],
         [KeyboardButton(text="🏆 Лидеры"), KeyboardButton(text="👤 Профиль")],
-    ])
-
-
-def gender_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👦 Я парень", url=PRIVATKA_URL)],
-        [InlineKeyboardButton(text="👧 Я девушка", url=PRIVATKA_URL)],
     ])
 
 
@@ -81,11 +74,16 @@ def gifts_kb():
 # ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Каналы на входе", callback_data="ch_list:start")],
-        [InlineKeyboardButton(text="💰 Каналы на вывод", callback_data="ch_list:withdraw")],
-        [InlineKeyboardButton(text="📋 Заявки на вывод", callback_data="wd_list")],
-        [InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="📢 Каналы на входе", callback_data="ch_list:start"),
+         InlineKeyboardButton(text="💰 Каналы на вывод", callback_data="ch_list:withdraw")],
+        [InlineKeyboardButton(text="📋 Заявки на вывод", callback_data="wd_list"),
+         InlineKeyboardButton(text="📜 История", callback_data="wd_history")],
+        [InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu"),
+         InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast")],
+        [InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos"),
+         InlineKeyboardButton(text="💸 Начислить", callback_data="give_start")],
+        [InlineKeyboardButton(text="👥 Юзер", callback_data="user_find"),
+         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
     ])
 
@@ -127,12 +125,29 @@ def admin_wd_kb(wid):
     ])
 
 
+def priv_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="priv_edit_text")],
+        [InlineKeyboardButton(text="🔗 Настроить кнопки", callback_data="priv_edit_buttons")],
+        [InlineKeyboardButton(text="🗑 Удалить приватку", callback_data="priv_delete")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def broadcast_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")],
+    ])
+
+
 def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Бонус за реферала", callback_data="set:ref_bonus")],
         [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="set:daily_bonus")],
         [InlineKeyboardButton(text="💸 Минимум вывода", callback_data="set:min_withdraw")],
         [InlineKeyboardButton(text="✏️ Текст под меню", callback_data="set:welcome_text")],
+        [InlineKeyboardButton(text="💚 Текст с ОП", callback_data="set:greeting_text")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
@@ -142,6 +157,13 @@ def promos_kb():
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="promo_create")],
         [InlineKeyboardButton(text="📜 Список промокодов", callback_data="promo_list")],
         [InlineKeyboardButton(text="🗑 Удалить промокод", callback_data="promo_delete")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def user_view_kb(uid):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Список рефералов", callback_data=f"user_refs:{uid}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
