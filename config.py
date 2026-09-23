@@ -6,9 +6,6 @@ ADMIN_ID = 8742164697
 
 DB = "bot.db"
 
-# Приватка (выбор пола)
-PRIVATKA_URL = "https://t.me/vsetut_topbot?start=chekpointop0408"
-
 # Рефералы
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
@@ -34,4 +31,19 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
+
+    # Приватка — первое сообщение после /start
+    "priv_enabled": "1",
+    "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
+    "priv_buttons": (
+        "👦 Я парень - https://t.me/vsetut_topbot?start=chekpointop0408"
+        " & 👧 Я девушка - https://t.me/vsetut_topbot?start=chekpointop0408"
+    ),
+
+    # Приветствие + ОП — второе сообщение после /start
+    "greeting_text": (
+        "💚 <b>Привет, {name}!</b> Тут можно получать подарки 🎁\n\n"
+        "✅ Подпишись на спонсоров ниже, чтобы войти в бота "
+        "и забрать 🧸 мишку!"
+    ),
 }
