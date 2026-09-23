@@ -35,7 +35,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# ============ СОСТОЯНИЯ ============
 class AddChannel(StatesGroup):
     waiting_link = State()
     waiting_title = State()
@@ -59,7 +58,6 @@ class WithdrawFlow(StatesGroup):
     waiting_sub = State()
 
 
-# ============ ПОДПИСКА ============
 async def check_sub(user_id, chat_id, bot_admin=True):
     if not bot_admin:
         return True
@@ -67,7 +65,7 @@ async def check_sub(user_id, chat_id, bot_admin=True):
     if not is_numeric:
         return True
     try:
-        member = await bot.getChatMember(int(chat_id), user_id)
+        member = await bot.get_chat_member(int(chat_id), user_id)
         if member.status in ("member", "administrator", "creator"):
             return True
     except Exception:
@@ -100,7 +98,6 @@ async def check_all_subs(user_id, ch_type, for_confirm=False):
     return False, channels
 
 
-# ============ ЗАЯВКА В КАНАЛ ============
 @dp.chat_join_request()
 async def on_join_request(request: ChatJoinRequest):
     try:
@@ -109,7 +106,6 @@ async def on_join_request(request: ChatJoinRequest):
         pass
 
 
-# ============ СТАРТ ============
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -172,7 +168,6 @@ async def cb_check_sub(call: CallbackQuery):
     await call.message.answer(welcome, reply_markup=main_menu())
 
 
-# ============ ЗАРАБОТАТЬ ============
 @dp.message(F.text == "⭐ Заработать звёзды")
 async def earn(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -208,7 +203,6 @@ async def earn(message: Message):
     await message.answer(text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
 
-# ============ ЛИДЕРЫ ============
 @dp.message(F.text == "🏆 Лидеры")
 async def leaders(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -228,7 +222,6 @@ async def leaders(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
-# ============ ПРОФИЛЬ ============
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
     ok, channels = await check_all_subs(message.from_user.id, "start")
@@ -311,7 +304,6 @@ async def user_promo_check(message: Message, state: FSMContext):
         await message.answer(msg)
 
 
-# ============ ВЫВОД ============
 @dp.message(F.text == "💸 Вывести звёзды")
 async def withdraw(message: Message, state: FSMContext):
     await state.clear()
@@ -432,7 +424,6 @@ async def create_order(call: CallbackQuery, key):
         print("Ошибка отправки админу:", e)
 
 
-# ============ АДМИНКА ============
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -533,8 +524,7 @@ async def ch_add(call: CallbackQuery, state: FSMContext):
         "3️⃣ Пересланное сообщение из канала\n\n"
         "💡 Для закрытого канала после ссылки пришлёшь название и ID "
         "(вида <code>-100...</code>).\n\n"
-        "⚠️ Проверка работает только если бот админ в канале. "
-        "Иначе канал добавится, но будет 🟡 без проверки.",
+        "⚠️ Проверка работает только если бот админ в канале.",
         parse_mode="HTML"
     )
     await state.update_data(ch_type=ch_type)
@@ -548,7 +538,6 @@ async def add_ch_link(message: Message, state: FSMContext):
     data = await state.get_data()
     ch_type = data.get("ch_type", "start")
 
-    # Пересланное сообщение из канала
     if message.forward_from_chat:
         fwd = message.forward_from_chat
         chat_id = str(fwd.id)
@@ -564,7 +553,7 @@ async def add_ch_link(message: Message, state: FSMContext):
             f"🤖 Bot ID: <code>{bot.id}</code>\n\n"
         )
         try:
-            member = await bot.getChatMember(fwd.id, bot.id)
+            member = await bot.get_chat_member(fwd.id, bot.id)
             debug += f"✅ Статус бота: <b>{member.status}</b>"
             if member.status in ("administrator", "creator"):
                 bot_admin = 1
@@ -591,14 +580,12 @@ async def add_ch_link(message: Message, state: FSMContext):
 
     text = message.text.strip()
 
-    # Ссылка-приглашение закрытого канала
     if "t.me/+" in text or "t.me/joinchat/" in text:
         await state.update_data(ch_type=ch_type, invite_link=text)
         await message.answer("✏️ Введи название канала (как показывать юзерам):")
         await state.set_state(AddChannel.waiting_title)
         return
 
-    # Публичный канал
     if "t.me/" in text:
         part = text.split("t.me/")[-1].split("?")[0].strip("/")
         if part and not part.startswith("+"):
@@ -618,13 +605,13 @@ async def add_ch_link(message: Message, state: FSMContext):
         )
 
         try:
-            chat = await bot.getChat(username)
+            chat = await bot.get_chat(username)
             title = chat.title or username
             chat_id = str(chat.id)
             link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else link)
             debug += f"🆔 ID: <code>{chat_id}</code>\n"
             try:
-                member = await bot.getChatMember(chat.id, bot.id)
+                member = await bot.get_chat_member(chat.id, bot.id)
                 debug += f"✅ Статус бота: <b>{member.status}</b>"
                 if member.status in ("administrator", "creator"):
                     bot_admin = 1
@@ -698,7 +685,7 @@ async def add_ch_id(message: Message, state: FSMContext):
 
     if text.lstrip("-").isdigit():
         try:
-            member = await bot.getChatMember(int(text), bot.id)
+            member = await bot.get_chat_member(int(text), bot.id)
             debug += f"✅ Статус бота: <b>{member.status}</b>"
             if member.status in ("administrator", "creator"):
                 bot_admin = 1
@@ -1023,7 +1010,6 @@ async def set_value_save(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {key} = {value}", reply_markup=back_admin_kb())
 
 
-# ============ ФОНОВЫЕ ЗАДАЧИ ============
 async def referral_watcher():
     while True:
         try:
@@ -1063,7 +1049,6 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
-# ============ ЗАПУСК ============
 async def main():
     init_db()
     asyncio.create_task(referral_watcher())
