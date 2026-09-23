@@ -109,6 +109,7 @@ def set_setting(key, value):
     conn.close()
 
 
+# ============ ПОЛЬЗОВАТЕЛИ ============
 def get_user(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -201,6 +202,16 @@ def set_bonus_taken(user_id):
     conn.close()
 
 
+def get_all_user_ids():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM users")
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+# ============ РЕФЕРАЛЫ ============
 def create_pending_referral(user_id, referrer_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -234,6 +245,20 @@ def get_confirmed_refs_count(referrer_id):
     n = cur.fetchone()[0]
     conn.close()
     return n
+
+
+def get_user_referrals(referrer_id, limit=100):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT r.user_id, u.username, r.created_at, r.status "
+        "FROM referrals r LEFT JOIN users u ON u.user_id = r.user_id "
+        "WHERE r.referrer_id = ? ORDER BY r.created_at DESC LIMIT ?",
+        (referrer_id, limit)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def confirm_referral(user_id):
@@ -292,6 +317,7 @@ def mark_reminded(rid):
     conn.close()
 
 
+# ============ ВЫВОДЫ ============
 def create_withdrawal(user_id, amount, gift):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -324,6 +350,19 @@ def get_pending_withdrawals():
     return rows
 
 
+def get_withdrawal_history(limit=50):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, amount, gift, status, created_at FROM withdrawals "
+        "WHERE status != 'pending' ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
 def set_withdrawal_status(wid, status):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -332,6 +371,7 @@ def set_withdrawal_status(wid, status):
     conn.close()
 
 
+# ============ КАНАЛЫ ============
 def get_channels(ch_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -427,6 +467,7 @@ def cleanup_join_requests():
     conn.close()
 
 
+# ============ СТАТИСТИКА ============
 def get_stats():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -450,6 +491,7 @@ def get_stats():
     }
 
 
+# ============ ПРОМОКОДЫ ============
 def create_promo(code, amount, max_uses):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
