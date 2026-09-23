@@ -525,13 +525,16 @@ async def ch_add(call: CallbackQuery, state: FSMContext):
         return
     ch_type = call.data.split(":")[1]
     await call.message.answer(
-        "📢 <b>Как добавить канал:</b>\n\n"
-        "1️⃣ Пришли @username (публичный)\n"
-        "2️⃣ Пришли ссылку https://t.me/+... (закрытый)\n"
-        "3️⃣ Перешли сообщение из канала\n\n"
-        "💡 Если бот админ в канале — пришли ещё ID (вида <code>-100...</code>),\n"
-        "тогда проверка подписки будет работать.\n\n"
-        "⚠️ Без бота-админа канал добавится, но проверка не работает.",
+        "📢 <b>Как добавить ОП:</b>\n\n"
+        "1️⃣ Публичный канал — пришли ссылку:\n"
+        "<code>https://t.me/username</code>\n\n"
+        "2️⃣ Закрытый канал — пришли ссылку-приглашение:\n"
+        "<code>https://t.me/+xxxxx</code>\n\n"
+        "3️⃣ Пересланное сообщение из канала\n\n"
+        "💡 Для закрытого канала после ссылки пришлёшь название и ID "
+        "(вида <code>-100...</code>).\n\n"
+        "⚠️ Проверка работает только если бот админ в канале. "
+        "Иначе канал добавится, но будет 🟡 без проверки.",
         parse_mode="HTML"
     )
     await state.update_data(ch_type=ch_type)
@@ -554,7 +557,7 @@ async def add_ch_link(message: Message, state: FSMContext):
 
         bot_admin = 0
         debug = (
-            f"🔍 <b>ОТЛАДКА</b>\n\n"
+            f"🔍 <b>ОТЛАДКА (пересылка)</b>\n\n"
             f"📢 Канал: {title}\n"
             f"🆔 ID: <code>{chat_id}</code>\n"
             f"📁 Тип: {fwd.type}\n"
@@ -568,7 +571,6 @@ async def add_ch_link(message: Message, state: FSMContext):
         except Exception as e:
             debug += f"❌ Ошибка getChatMember:\n<code>{e}</code>"
 
-        # Отправляем отладку тебе в личку
         try:
             await bot.send_message(ADMIN_ID, debug, parse_mode="HTML")
         except Exception:
@@ -584,17 +586,19 @@ async def add_ch_link(message: Message, state: FSMContext):
         return
 
     if not message.text:
-        await message.answer("⚠️ Пришли @username, ссылку или перешли сообщение.")
+        await message.answer("⚠️ Пришли ссылку или перешли сообщение.")
         return
 
     text = message.text.strip()
 
+    # Ссылка-приглашение закрытого канала
     if "t.me/+" in text or "t.me/joinchat/" in text:
         await state.update_data(ch_type=ch_type, invite_link=text)
         await message.answer("✏️ Введи название канала (как показывать юзерам):")
         await state.set_state(AddChannel.waiting_title)
         return
 
+    # Публичный канал
     if "t.me/" in text:
         part = text.split("t.me/")[-1].split("?")[0].strip("/")
         if part and not part.startswith("+"):
@@ -606,19 +610,34 @@ async def add_ch_link(message: Message, state: FSMContext):
         title = username
         chat_id = username
         bot_admin = 0
+
+        debug = (
+            f"🔍 <b>ОТЛАДКА (@username)</b>\n\n"
+            f"📢 Юзернейм: {username}\n"
+            f"🤖 Bot ID: <code>{bot.id}</code>\n\n"
+        )
+
         try:
             chat = await bot.getChat(username)
             title = chat.title or username
             chat_id = str(chat.id)
             link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else link)
+            debug += f"🆔 ID: <code>{chat_id}</code>\n"
             try:
                 member = await bot.getChatMember(chat.id, bot.id)
+                debug += f"✅ Статус бота: <b>{member.status}</b>"
                 if member.status in ("administrator", "creator"):
                     bot_admin = 1
-            except Exception:
-                bot_admin = 0
+            except Exception as e:
+                debug += f"❌ Ошибка getChatMember:\n<code>{e}</code>"
+        except Exception as e:
+            debug += f"❌ Ошибка getChat:\n<code>{e}</code>"
+
+        try:
+            await bot.send_message(ADMIN_ID, debug, parse_mode="HTML")
         except Exception:
             pass
+
         add_channel(chat_id, title, link, ch_type, bot_admin)
         status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
         await message.answer(
@@ -629,7 +648,7 @@ async def add_ch_link(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        "⚠️ Не понял. Пришли @username, ссылку https://t.me/... или перешли сообщение из канала."
+        "⚠️ Не понял. Пришли ссылку https://t.me/... или перешли сообщение."
     )
 
 
@@ -668,16 +687,33 @@ async def add_ch_id(message: Message, state: FSMContext):
 
     chat_id = text
     bot_admin = 0
+
+    debug = (
+        f"🔍 <b>ОТЛАДКА (закрытый канал)</b>\n\n"
+        f"📢 Канал: {title}\n"
+        f"🔗 Ссылка: {link}\n"
+        f"🆔 Присланный ID: <code>{text}</code>\n"
+        f"🤖 Bot ID: <code>{bot.id}</code>\n\n"
+    )
+
     if text.lstrip("-").isdigit():
         try:
             member = await bot.getChatMember(int(text), bot.id)
+            debug += f"✅ Статус бота: <b>{member.status}</b>"
             if member.status in ("administrator", "creator"):
                 bot_admin = 1
-        except Exception:
-            bot_admin = 0
+        except Exception as e:
+            debug += f"❌ Ошибка getChatMember:\n<code>{e}</code>"
+    else:
+        debug += f"⚠️ ID не числовой, проверка невозможна"
+
+    try:
+        await bot.send_message(ADMIN_ID, debug, parse_mode="HTML")
+    except Exception:
+        pass
 
     add_channel(chat_id, title, link, ch_type, bot_admin)
-    status = "🟢 проверка работает" if bot_admin else "🟡 без проверки (бот не админ)"
+    status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
     await message.answer(
         f"✅ Канал «{title}» добавлен\n{status}",
         reply_markup=back_admin_kb()
