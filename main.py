@@ -77,26 +77,29 @@ async def check_sub(user_id, chat_id, bot_admin=True):
     return False
 
 
-async def check_all_subs(user_id, ch_type):
+async def check_all_subs(user_id, ch_type, for_confirm=False):
     channels = get_channels(ch_type)
     if not channels:
         return True, []
 
     all_green_ok = True
+    has_green = False
     for ch in channels:
         chat_id = ch[1]
         bot_admin = ch[4] if len(ch) > 4 else 0
         if not bot_admin:
             continue
+        has_green = True
         ok = await check_sub(user_id, chat_id, True)
         if not ok:
             all_green_ok = False
         else:
             track_channel_join(chat_id, user_id)
 
-    if not all_green_ok:
-        return False, channels
-    return True, channels
+    if for_confirm:
+        return all_green_ok, channels
+
+    return False, channels
 
 
 # ============ ЗАЯВКА В КАНАЛ ============
@@ -160,7 +163,7 @@ async def start(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "check_sub")
 async def cb_check_sub(call: CallbackQuery):
-    ok, channels = await check_all_subs(call.from_user.id, "start")
+    ok, channels = await check_all_subs(call.from_user.id, "start", for_confirm=True)
     if not ok:
         await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
         return
@@ -365,7 +368,7 @@ async def wd_confirm_sub(call: CallbackQuery, state: FSMContext):
         await call.answer("Сначала выбери подарок", show_alert=True)
         return
 
-    ok, channels = await check_all_subs(call.from_user.id, "withdraw")
+    ok, channels = await check_all_subs(call.from_user.id, "withdraw", for_confirm=True)
     if not ok:
         await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
         return
@@ -466,7 +469,6 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# --- каналы ---
 @dp.callback_query(F.data.startswith("ch_list:"))
 async def ch_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -551,13 +553,25 @@ async def add_ch_link(message: Message, state: FSMContext):
         chat_id = str(fwd.id)
         title = fwd.title or f"Канал {chat_id}"
         link = f"https://t.me/{fwd.username}" if fwd.username else ""
+
+        print("=== ADD CHANNEL DEBUG ===")
+        print(f"forward_from_chat.id: {fwd.id}")
+        print(f"forward_from_chat.title: {fwd.title}")
+        print(f"forward_from_chat.type: {fwd.type}")
+        print(f"forward_from_chat.username: {fwd.username}")
+        print(f"bot.id: {bot.id}")
+
         bot_admin = 0
         try:
             member = await bot.getChatMember(fwd.id, bot.id)
+            print(f"getChatMember status: {member.status}")
             if member.status in ("administrator", "creator"):
                 bot_admin = 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"getChatMember ОШИБКА: {e}")
+        print(f"bot_admin = {bot_admin}")
+        print("=== END DEBUG ===")
+
         add_channel(chat_id, title, link, ch_type, bot_admin)
         status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
         await message.answer(
@@ -715,7 +729,6 @@ async def ch_clear(call: CallbackQuery):
     )
 
 
-# --- заявки ---
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -799,7 +812,6 @@ async def wd_no(call: CallbackQuery):
         pass
 
 
-# --- промокоды ---
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -899,7 +911,6 @@ async def promo_delete_step(message: Message, state: FSMContext):
     await message.answer(f"🗑 Промокод <code>{code}</code> удалён.", parse_mode="HTML")
 
 
-# --- статистика ---
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -925,7 +936,6 @@ async def stats(call: CallbackQuery):
     )
 
 
-# --- настройки ---
 @dp.callback_query(F.data == "settings")
 async def settings(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
