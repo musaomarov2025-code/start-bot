@@ -4,7 +4,6 @@ from aiogram.types import (
 )
 
 from config import GIFTS, GIFTS_ORDER
-from database import get_channels
 
 
 # ============ ПОЛЬЗОВАТЕЛЬСКИЕ ============
@@ -14,29 +13,6 @@ def main_menu():
         [KeyboardButton(text="💸 Вывести звёзды")],
         [KeyboardButton(text="🏆 Лидеры"), KeyboardButton(text="👤 Профиль")],
     ])
-
-
-def sub_kb(channels):
-    buttons = []
-    for i, ch in enumerate(channels, 1):
-        chat_id = ch[1]
-        link = ch[3]
-        url = link if link else f"https://t.me/{chat_id.lstrip('@')}"
-        buttons.append([InlineKeyboardButton(text=f"📢 Подписаться {i}", url=url)])
-    buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="check_sub")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def withdraw_sub_kb(channels):
-    buttons = []
-    for i, ch in enumerate(channels, 1):
-        chat_id = ch[1]
-        link = ch[3]
-        url = link if link else f"https://t.me/{chat_id.lstrip('@')}"
-        buttons.append([InlineKeyboardButton(text=f"📢 Подписаться {i}", url=url)])
-    buttons.append([InlineKeyboardButton(text="✅ Подтвердить", callback_data="wd_confirm_sub")])
-    buttons.append([InlineKeyboardButton(text="❌ Отменить", callback_data="wd_cancel_sub")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def earn_kb(share_url):
@@ -74,46 +50,30 @@ def gifts_kb():
 # ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Каналы на входе", callback_data="ch_list:start"),
-         InlineKeyboardButton(text="💰 Каналы на вывод", callback_data="ch_list:withdraw")],
-        [InlineKeyboardButton(text="📋 Заявки на вывод", callback_data="wd_list"),
-         InlineKeyboardButton(text="📜 История", callback_data="wd_history")],
-        [InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu"),
-         InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast")],
-        [InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos"),
-         InlineKeyboardButton(text="💸 Начислить", callback_data="give_start")],
-        [InlineKeyboardButton(text="👥 Юзер", callback_data="user_find"),
-         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="🎯 Flyer", callback_data="flyer_menu"),
+         InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
+        [InlineKeyboardButton(text="📜 История", callback_data="wd_history"),
+         InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
+         InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
+        [InlineKeyboardButton(text="💸 Начислить", callback_data="give_start"),
+         InlineKeyboardButton(text="👥 Юзер", callback_data="user_find")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
 
 
-def channels_kb(ch_type):
-    rows = get_channels(ch_type)
-    buttons = []
-    for ch in rows:
-        cid = ch[0]
-        title = ch[2]
-        bot_admin = ch[4] if len(ch) > 4 else 0
-        icon = "🟢" if bot_admin else "🟡"
-        buttons.append([InlineKeyboardButton(text=f"{icon} {title}", callback_data=f"ch_view:{cid}")])
-    buttons.append([InlineKeyboardButton(text="➕ Добавить канал", callback_data=f"ch_add:{ch_type}")])
-    if rows:
-        buttons.append([InlineKeyboardButton(text="🗑 Удалить канал", callback_data=f"ch_del_list:{ch_type}")])
-    buttons.append([InlineKeyboardButton(text="🧹 Очистить все", callback_data=f"ch_clear:{ch_type}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def channels_delete_kb(ch_type):
-    rows = get_channels(ch_type)
-    buttons = []
-    for ch in rows:
-        cid = ch[0]
-        title = ch[2]
-        buttons.append([InlineKeyboardButton(text=f"❌ {title}", callback_data=f"ch_del:{cid}:{ch_type}")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"ch_list:{ch_type}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def flyer_kb(enabled):
+    status = "🔴 Выключить" if enabled else "🟢 Включить"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Текст сообщения", callback_data="flyer_edit_text"),
+         InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="flyer_edit_btn_text")],
+        [InlineKeyboardButton(text="📏 Кнопок в ряд", callback_data="flyer_edit_rows"),
+         InlineKeyboardButton(text="🔑 Ключ", callback_data="flyer_edit_key")],
+        [InlineKeyboardButton(text=status, callback_data="flyer_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
 
 
 def admin_wd_kb(wid):
@@ -147,7 +107,6 @@ def settings_kb():
         [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="set:daily_bonus")],
         [InlineKeyboardButton(text="💸 Минимум вывода", callback_data="set:min_withdraw")],
         [InlineKeyboardButton(text="✏️ Текст под меню", callback_data="set:welcome_text")],
-        [InlineKeyboardButton(text="💚 Текст с ОП", callback_data="set:greeting_text")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
