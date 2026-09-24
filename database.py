@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime, timedelta, date
-from config import DB, DEFAULTS, GIFTS, REFERRAL_DAYS, JOIN_REQUEST_HOURS
+from config import DB, DEFAULTS, REFERRAL_DAYS, JOIN_REQUEST_HOURS
 
 
 def init_db():
@@ -37,35 +37,6 @@ def init_db():
         )
     """)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id TEXT,
-            title TEXT,
-            invite_link TEXT,
-            type TEXT
-        )
-    """)
-    cur.execute("PRAGMA table_info(channels)")
-    cols = [row[1] for row in cur.fetchall()]
-    if "bot_admin" not in cols:
-        cur.execute("ALTER TABLE channels ADD COLUMN bot_admin INTEGER DEFAULT 0")
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS channel_joins (
-            chat_id TEXT,
-            user_id INTEGER,
-            PRIMARY KEY (chat_id, user_id)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS join_requests (
-            user_id INTEGER,
-            chat_id TEXT,
-            created_at TEXT,
-            PRIMARY KEY (user_id, chat_id)
-        )
-    """)
-    cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -86,6 +57,25 @@ def init_db():
             user_id INTEGER,
             used_at TEXT,
             PRIMARY KEY (code, user_id)
+        )
+    """)
+    # Выполненные задания PiarFlow
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS piarflow_done (
+            user_id INTEGER,
+            link TEXT,
+            done_at TEXT,
+            PRIMARY KEY (user_id, link)
+        )
+    """)
+    # Свои задания (созданные админом)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            link TEXT,
+            reward INTEGER,
+            active INTEGER DEFAULT 1
         )
     """)
     conn.commit()
@@ -371,102 +361,6 @@ def set_withdrawal_status(wid, status):
     conn.close()
 
 
-# ============ КАНАЛЫ ============
-def get_channels(ch_type):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, chat_id, title, invite_link, bot_admin FROM channels WHERE type = ?", (ch_type,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_channel_by_id(cid):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, chat_id, title, invite_link, type, bot_admin FROM channels WHERE id = ?", (cid,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def add_channel(chat_id, title, invite_link, ch_type, bot_admin=0):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO channels (chat_id, title, invite_link, type, bot_admin) VALUES (?, ?, ?, ?, ?)",
-        (chat_id, title, invite_link, ch_type, bot_admin)
-    )
-    conn.commit()
-    conn.close()
-
-
-def delete_channel(cid):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM channels WHERE id = ?", (cid,))
-    conn.commit()
-    conn.close()
-
-
-def clear_channels(ch_type):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM channels WHERE type = ?", (ch_type,))
-    conn.commit()
-    conn.close()
-
-
-def track_channel_join(chat_id, user_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO channel_joins (chat_id, user_id) VALUES (?, ?)", (chat_id, user_id))
-    conn.commit()
-    conn.close()
-
-
-def get_channel_joins(chat_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM channel_joins WHERE chat_id = ?", (chat_id,))
-    n = cur.fetchone()[0]
-    conn.close()
-    return n
-
-
-def save_join_request(user_id, chat_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT OR REPLACE INTO join_requests (user_id, chat_id, created_at) VALUES (?, ?, ?)",
-        (user_id, str(chat_id), datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
-
-
-def has_recent_join_request(user_id, chat_id):
-    threshold = (datetime.now() - timedelta(hours=JOIN_REQUEST_HOURS)).isoformat()
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT 1 FROM join_requests WHERE user_id = ? AND chat_id = ? AND created_at > ?",
-        (user_id, str(chat_id), threshold)
-    )
-    row = cur.fetchone()
-    conn.close()
-    return row is not None
-
-
-def cleanup_join_requests():
-    threshold = (datetime.now() - timedelta(hours=JOIN_REQUEST_HOURS)).isoformat()
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM join_requests WHERE created_at < ?", (threshold,))
-    conn.commit()
-    conn.close()
-
-
 # ============ СТАТИСТИКА ============
 def get_stats():
     conn = sqlite3.connect(DB)
@@ -563,3 +457,62 @@ def activate_promo(code, user_id):
     conn.commit()
     conn.close()
     return True, f"✅ Промокод активирован! +{amount} ⭐", amount
+
+
+# ============ PIARFLOW ============
+def piarflow_mark_done(user_id, link):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO piarflow_done (user_id, link, done_at) VALUES (?, ?, ?)",
+        (user_id, link, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def piarflow_is_done(user_id, link):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM piarflow_done WHERE user_id = ? AND link = ?", (user_id, link))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
+# ============ СВОИ ЗАДАНИЯ ============
+def create_custom_task(title, link, reward):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)",
+        (title, link, reward)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_custom_tasks():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_custom_task(task_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks WHERE id = ?", (task_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def delete_custom_task(task_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM custom_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
