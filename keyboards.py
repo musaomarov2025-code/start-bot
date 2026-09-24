@@ -47,41 +47,69 @@ def gifts_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def task_kb(link, source):
-    """source — 'piarflow' или ID своего задания"""
+def task_kb(link):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Перейти", url=link),
          InlineKeyboardButton(text="⏭ Пропустить", callback_data="task_skip")],
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"task_check:{source}")],
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="task_check")],
     ])
 
 
 # ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎯 PiarFlow", callback_data="piarflow_menu"),
+        [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
          InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
         [InlineKeyboardButton(text="📜 История", callback_data="wd_history"),
          InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu")],
+        [InlineKeyboardButton(text="🎯 Flyer задания", callback_data="fly_menu"),
+         InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
-        [InlineKeyboardButton(text="📌 Свои задания", callback_data="tasks_menu"),
-         InlineKeyboardButton(text="💸 Начислить", callback_data="give_start")],
-        [InlineKeyboardButton(text="👥 Юзер", callback_data="user_find"),
-         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
-         InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
+        [InlineKeyboardButton(text="💸 Начислить", callback_data="give_start"),
+         InlineKeyboardButton(text="👥 Юзер", callback_data="user_find")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
 
 
-def piarflow_kb(enabled):
+def bh_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔑 Ключ", callback_data="pf_edit_key"),
-         InlineKeyboardButton(text="💰 Награда за задание", callback_data="pf_edit_reward")],
-        [InlineKeyboardButton(text="📥 ОП на входе", callback_data="pf_edit_entry"),
-         InlineKeyboardButton(text="💸 ОП на выводе", callback_data="pf_edit_wd")],
-        [InlineKeyboardButton(text=status, callback_data="pf_toggle")],
+        [InlineKeyboardButton(text="✏️ Текст сообщения", callback_data="bh_edit_text"),
+         InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="bh_edit_btn")],
+        [InlineKeyboardButton(text="📥 ОП на входе", callback_data="bh_edit_entry"),
+         InlineKeyboardButton(text="💸 ОП на выводе", callback_data="bh_edit_wd")],
+        [InlineKeyboardButton(text=status, callback_data="bh_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def fly_kb(enabled):
+    status = "🔴 Выключить" if enabled else "🟢 Включить"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Награда за задание", callback_data="fly_edit_reward")],
+        [InlineKeyboardButton(text=status, callback_data="fly_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def cop_kb(op_type):
+    """op_type: 'entry' или 'withdraw'"""
+    title = "входе" if op_type == "entry" else "выводе"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"➕ Добавить (на {title})", callback_data=f"cop_add:{op_type}")],
+        [InlineKeyboardButton(text=f"📜 Список (на {title})", callback_data=f"cop_list:{op_type}")],
+        [InlineKeyboardButton(text=f"🗑 Удалить", callback_data=f"cop_del:{op_type}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def cop_type_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 На входе", callback_data="cop_menu:entry")],
+        [InlineKeyboardButton(text="💸 На выводе", callback_data="cop_menu:withdraw")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
@@ -126,15 +154,6 @@ def promos_kb():
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="promo_create")],
         [InlineKeyboardButton(text="📜 Список промокодов", callback_data="promo_list")],
         [InlineKeyboardButton(text="🗑 Удалить промокод", callback_data="promo_delete")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
-def tasks_admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить задание", callback_data="task_add")],
-        [InlineKeyboardButton(text="📜 Список заданий", callback_data="task_list")],
-        [InlineKeyboardButton(text="🗑 Удалить задание", callback_data="task_delete")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
