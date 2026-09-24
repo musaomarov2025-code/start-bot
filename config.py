@@ -38,7 +38,7 @@ DEFAULTS = {
     # Меню
     "welcome_text": "Главное меню 👇",
 
-    # Приватка (первое сообщение)
+    # Приватка (первое сообщение после /start)
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
     "priv_buttons": (
@@ -50,6 +50,6 @@ DEFAULTS = {
     "flyer_key": FLYER_KEY,
     "flyer_enabled": "1",
     "flyer_text": "📢 <b>Подпишись на спонсоров ниже</b> ⤵️",
-    "flyer_button_text": "📢 Подпишись {n}",
+    "flyer_button_text": "📢 Подпишись",
     "flyer_rows": "2",
 }
