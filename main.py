@@ -43,7 +43,6 @@ from keyboards import (
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ID бота (берём из токена — цифры до «:»)
 BOT_ID = int(BOT_TOKEN.split(":")[0])
 
 
@@ -115,27 +114,9 @@ async def pf_get_sponsors(user_id, limit):
                               json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
-                # ОТЛАДКА
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🔍 <b>PiarFlow sponsors</b>\n\n"
-                        f"user_id: <code>{user_id}</code>\n"
-                        f"chat_id: <code>{BOT_ID}</code>\n"
-                        f"limit: {limit}\n\n"
-                        f"Ответ:\n<code>{str(data)[:700]}</code>",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
                 return data.get("sponsors", data.get("offers", []))
     except Exception as e:
         print("PiarFlow sponsors error:", e)
-        try:
-            await bot.send_message(ADMIN_ID,
-                f"❌ <b>PiarFlow sponsors error</b>\n<code>{e}</code>",
-                parse_mode="HTML")
-        except Exception:
-            pass
         return []
 
 
@@ -151,18 +132,6 @@ async def pf_check_links(user_id, links):
                               json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
-                # ОТЛАДКА
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🔍 <b>PiarFlow check</b>\n\n"
-                        f"user_id: <code>{user_id}</code>\n"
-                        f"chat_id: <code>{BOT_ID}</code>\n"
-                        f"links: <code>{links}</code>\n\n"
-                        f"Ответ:\n<code>{str(data)[:700]}</code>",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
                 result = {}
                 items = data.get("sponsors") or data.get("offers") or data.get("links") or []
                 for item in items:
@@ -174,22 +143,15 @@ async def pf_check_links(user_id, links):
                 return result
     except Exception as e:
         print("PiarFlow check error:", e)
-        try:
-            await bot.send_message(ADMIN_ID,
-                f"❌ <b>PiarFlow check error</b>\n<code>{e}</code>",
-                parse_mode="HTML")
-        except Exception:
-            pass
         return {}
 
 
 async def pf_check_one(user_id, link):
     result = await pf_check_links(user_id, [link])
-    status = result.get(link)
-    return status in ("subscribed", True, "ok", "active")
+    return result.get(link) in ("subscribed", True, "ok", "active")
 
 
-async def pf_all_passed(user_id, links):
+async def pf_all_passed_once(user_id, links):
     if not links:
         return True
     result = await pf_check_links(user_id, links)
@@ -197,6 +159,19 @@ async def pf_all_passed(user_id, links):
         if result.get(link) not in ("subscribed", True, "ok", "active"):
             return False
     return True
+
+
+async def pf_all_passed(user_id, links, retries=3, delay=7):
+    """Проверяет с повторами. 3 × 7 = 21 секунда."""
+    if not links:
+        return True
+    for i in range(retries):
+        ok = await pf_all_passed_once(user_id, links)
+        if ok:
+            return True
+        if i < retries - 1:
+            await asyncio.sleep(delay)
+    return False
 
 
 # ============ БЭКАП ============
@@ -337,7 +312,7 @@ async def start(message: Message, state: FSMContext):
         sponsors = await pf_get_sponsors(message.from_user.id, limit)
         if sponsors:
             links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-            passed = await pf_all_passed(message.from_user.id, links)
+            passed = await pf_all_passed_once(message.from_user.id, links)
             if not passed:
                 await show_pf_sponsors(message, sponsors, "entry")
                 return
@@ -372,13 +347,31 @@ async def show_pf_sponsors(message, sponsors, context):
 
 @dp.callback_query(F.data == "pf_entry_check")
 async def pf_entry_check(call: CallbackQuery):
+    await call.answer()
     limit = int(get_setting("piarflow_entry_count"))
     sponsors = await pf_get_sponsors(call.from_user.id, limit)
     links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-    passed = await pf_all_passed(call.from_user.id, links)
+
+    try:
+        msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
+    except Exception:
+        msg = None
+
+    passed = await pf_all_passed(call.from_user.id, links, retries=3, delay=7)
+
     if not passed:
-        await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
+        if msg:
+            try:
+                await msg.edit_text("❌ Ты ещё не подписался на все каналы. Попробуй ещё раз.")
+            except Exception:
+                pass
         return
+
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     try:
         await call.message.delete()
     except Exception:
@@ -568,18 +561,44 @@ async def task_check(call: CallbackQuery):
         reward = int(get_setting("piarflow_task_reward"))
         key = link
 
-    subscribed = await pf_check_one(user_id, link)
+    await call.answer()
+    try:
+        msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
+    except Exception:
+        msg = None
+
+    subscribed = False
+    for i in range(3):
+        subscribed = await pf_check_one(user_id, link)
+        if subscribed:
+            break
+        if i < 2:
+            await asyncio.sleep(7)
+
     if not subscribed:
-        await call.answer("❌ Ты ещё не подписался!", show_alert=True)
+        if msg:
+            try:
+                await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
+            except Exception:
+                pass
         return
 
     if piarflow_is_done(user_id, key):
-        await call.answer("✅ Уже засчитано", show_alert=True)
+        if msg:
+            try:
+                await msg.edit_text("✅ Уже засчитано")
+            except Exception:
+                pass
         return
 
     piarflow_mark_done(user_id, key)
     add_balance(user_id, reward)
 
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     try:
         await call.message.delete()
     except Exception:
@@ -621,7 +640,7 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
         sponsors = await pf_get_sponsors(call.from_user.id, limit)
         if sponsors:
             links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-            passed = await pf_all_passed(call.from_user.id, links)
+            passed = await pf_all_passed_once(call.from_user.id, links)
             if not passed:
                 await state.update_data(gift_key=key)
                 await state.set_state(WithdrawFlow.waiting_sub)
@@ -637,20 +656,43 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "pf_wd_check")
 async def pf_wd_check(call: CallbackQuery, state: FSMContext):
+    await call.answer()
     limit = int(get_setting("piarflow_withdraw_count"))
     sponsors = await pf_get_sponsors(call.from_user.id, limit)
     links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-    passed = await pf_all_passed(call.from_user.id, links)
+
+    try:
+        msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
+    except Exception:
+        msg = None
+
+    passed = await pf_all_passed(call.from_user.id, links, retries=3, delay=7)
+
     if not passed:
-        await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
+        if msg:
+            try:
+                await msg.edit_text("❌ Ты ещё не подписался на все каналы.")
+            except Exception:
+                pass
         return
+
     data = await state.get_data()
     key = data.get("gift_key")
     if not key:
         await state.clear()
-        await call.answer("Выбери подарок заново", show_alert=True)
+        if msg:
+            try:
+                await msg.edit_text("❌ Выбери подарок заново.")
+            except Exception:
+                pass
         return
+
     await state.clear()
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     try:
         await call.message.delete()
     except Exception:
