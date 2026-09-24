@@ -4,9 +4,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 8742164697
 DB = "bot.db"
 
-# PiarFlow
-PIARFLOW_API_KEY = "cbxqaAcWQgT7ogU34d8lxiRO8Bc1oQyl"
-PIARFLOW_BASE_URL = "https://piarflow.com/v1"
+# Botohub — токен бота
+BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
+BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
+
+# Flyer — ключ для заданий
+FLYER_KEY = "FL-EzEoBC-PzGpeD-seLIsD-kHEwfN"
+FLYER_URL = "https://api.flyerhubs.com/check"
 
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
@@ -38,10 +42,14 @@ DEFAULTS = {
         " & 👧 Я девушка - https://t.me/vsetut_topbot?start=chekpointop0408"
     ),
 
-    # PiarFlow
-    "piarflow_key": PIARFLOW_API_KEY,
-    "piarflow_enabled": "1",
-    "piarflow_entry_count": "6",
-    "piarflow_withdraw_count": "6",
-    "piarflow_task_reward": "10",
+    # Botohub — ОП
+    "botohub_enabled": "1",
+    "botohub_entry_count": "6",      # спонсоров на входе
+    "botohub_withdraw_count": "6",   # спонсоров на выводе
+    "botohub_text": "✨ <b>Подпишись на спонсоров ниже</b>\n\nПосле подписки нажми «✅ Подтвердить» 👇",
+    "botohub_btn_text": "📢 Спонсор",
+
+    # Flyer — задания
+    "flyer_enabled": "1",
+    "flyer_task_reward": "10",       # награда за задание
 }
