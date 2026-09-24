@@ -6,6 +6,8 @@ from config import DB, DEFAULTS, REFERRAL_DAYS, JOIN_REQUEST_HOURS
 def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
+
+    # Пользователи
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -16,6 +18,7 @@ def init_db():
             registered_at TEXT
         )
     """)
+    # Рефералы
     cur.execute("""
         CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,6 +29,7 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     """)
+    # Заявки на вывод
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,12 +40,14 @@ def init_db():
             created_at TEXT
         )
     """)
+    # Настройки
     cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     """)
+    # Промокоды
     cur.execute("""
         CREATE TABLE IF NOT EXISTS promos (
             code TEXT PRIMARY KEY,
@@ -59,29 +65,30 @@ def init_db():
             PRIMARY KEY (code, user_id)
         )
     """)
-    # Выполненные задания PiarFlow
+    # Свои ОП (каналы, которые ты добавляешь вручную)
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS piarflow_done (
+        CREATE TABLE IF NOT EXISTS custom_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            link TEXT,
+            type TEXT,          -- 'entry' или 'withdraw'
+            active INTEGER DEFAULT 1
+        )
+    """)
+    # Выполненные задания Flyer
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS flyer_done (
             user_id INTEGER,
             link TEXT,
             done_at TEXT,
             PRIMARY KEY (user_id, link)
         )
     """)
-    # Свои задания (созданные админом)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS custom_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            link TEXT,
-            reward INTEGER,
-            active INTEGER DEFAULT 1
-        )
-    """)
     conn.commit()
     conn.close()
 
 
+# ============ НАСТРОЙКИ ============
 def get_setting(key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -146,15 +153,6 @@ def get_balance(user_id):
     row = cur.fetchone()
     conn.close()
     return row[0] if row else 0
-
-
-def get_top(limit=10):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT username, balance FROM users ORDER BY balance DESC LIMIT ?", (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 def get_place(user_id):
@@ -459,60 +457,55 @@ def activate_promo(code, user_id):
     return True, f"✅ Промокод активирован! +{amount} ⭐", amount
 
 
-# ============ PIARFLOW ============
-def piarflow_mark_done(user_id, link):
+# ============ СВОИ ОП ============
+def add_custom_op(title, link, op_type):
+    """op_type: 'entry' или 'withdraw'"""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO piarflow_done (user_id, link, done_at) VALUES (?, ?, ?)",
+        "INSERT INTO custom_ops (title, link, type, active) VALUES (?, ?, ?, 1)",
+        (title, link, op_type)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_custom_ops(op_type):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, title, link FROM custom_ops WHERE type = ? AND active = 1 ORDER BY id",
+        (op_type,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def delete_custom_op(op_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM custom_ops WHERE id = ?", (op_id,))
+    conn.commit()
+    conn.close()
+
+
+# ============ FLYER ЗАДАНИЯ ============
+def flyer_mark_done(user_id, link):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO flyer_done (user_id, link, done_at) VALUES (?, ?, ?)",
         (user_id, link, datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
 
 
-def piarflow_is_done(user_id, link):
+def flyer_is_done(user_id, link):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM piarflow_done WHERE user_id = ? AND link = ?", (user_id, link))
+    cur.execute("SELECT 1 FROM flyer_done WHERE user_id = ? AND link = ?", (user_id, link))
     row = cur.fetchone()
     conn.close()
     return row is not None
-
-
-# ============ СВОИ ЗАДАНИЯ ============
-def create_custom_task(title, link, reward):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)",
-        (title, link, reward)
-    )
-    conn.commit()
-    conn.close()
-
-
-def list_custom_tasks():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks ORDER BY id")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_custom_task(task_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks WHERE id = ?", (task_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def delete_custom_task(task_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM custom_tasks WHERE id = ?", (task_id,))
-    conn.commit()
-    conn.close()
