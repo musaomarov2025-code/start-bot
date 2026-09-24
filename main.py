@@ -94,45 +94,43 @@ class CopDel(StatesGroup):
     waiting_id = State()
 
 
-# ============ BOTOHUB (ОП) ============
+# ============ BOTOHUB ============
 def bh_enabled():
     return get_setting("botohub_enabled") == "1"
 
 
-async def bh_get_tasks(user_id, count):
-    """Запрашивает у Botohub список спонсоров для юзера."""
+async def bh_get_tasks(chat_id, count):
+    """Запрашивает у Botohub список спонсоров. Возвращает dict."""
     if not BOTOHUB_TOKEN:
-        return []
+        return {"tasks": [], "completed": True, "skip": True}
     payload = {
-        "token": BOTOHUB_TOKEN,
-        "user_id": user_id,
-        "max_tasks": count,
+        "chat_id": chat_id,
+        "max_op": count,
     }
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(BOTOHUB_URL, json=payload,
+            async with s.post(BOTOHUB_URL,
+                              json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                return data.get("tasks", data.get("sponsors", []))
+                return await r.json()
     except Exception as e:
         print("Botohub error:", e)
-        return []
+        return {"tasks": [], "completed": True, "skip": True}
 
 
-async def bh_check_user(user_id, tasks):
-    """Проверка подписки по списку tasks. Возвращает True/False."""
+async def bh_all_done(chat_id, count):
+    """True — все спонсоры пройдены."""
+    data = await bh_get_tasks(chat_id, count)
+    if data.get("completed") or data.get("skip"):
+        return True
+    tasks = data.get("tasks", [])
     if not tasks:
         return True
-    return False  # проверяется повторным запросом (Botohub сам покажет кто не подписан)
+    return all(t.get("completed") for t in tasks)
 
 
-async def bh_all_done(user_id, count):
-    """Botohub возвращает только неподписанных. Если список пуст — всё пройдено."""
-    tasks = await bh_get_tasks(user_id, count)
-    return len(tasks) == 0
-
-
-# ============ FLYER (задания) ============
+# ============ FLYER ============
 def fly_enabled():
     return get_setting("flyer_enabled") == "1"
 
@@ -158,7 +156,7 @@ async def flyer_check_one(user_id, link):
         if (t.get("link") or t.get("url")) == link:
             status = t.get("status") or t.get("subscribed")
             return status in ("subscribed", True, "ok", "active")
-    return True  # нет в списке — значит подписан
+    return True
 
 
 # ============ БЭКАП ============
@@ -258,22 +256,7 @@ def build_priv_buttons():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_op_kb(user_id, count, op_type, source):
-    """Собирает кнопки из своих ОП + Botohub задач."""
-    buttons = []
-    row = []
-    btn_text = get_setting("botohub_btn_text")
-    # Свои ОП
-    customs = list_custom_ops(op_type)
-    for i, (cid, title, link) in enumerate(customs, 1):
-        row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    # Botohub
-    return buttons, row
-
-
+# ============ ЭКРАН ОП ============
 async def show_op_screen(message, user_id, op_type, cb_data_confirm):
     """Показывает экран ОП: свои каналы + Botohub задачи."""
     count_key = "botohub_entry_count" if op_type == "entry" else "botohub_withdraw_count"
@@ -284,23 +267,26 @@ async def show_op_screen(message, user_id, op_type, cb_data_confirm):
 
     buttons = []
     row = []
-
-    # Свои каналы (если есть)
-    customs = list_custom_ops(op_type)
     btn_text = get_setting("botohub_btn_text")
+
+    # Свои каналы
+    customs = list_custom_ops(op_type)
     for i, (cid, title, link) in enumerate(customs, 1):
         row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
         if len(row) == 2:
             buttons.append(row)
             row = []
 
-    # Botohub спонсоры
-    tasks = await bh_get_tasks(user_id, count)
+    # Botohub
+    data = await bh_get_tasks(user_id, count)
+    tasks = data.get("tasks", [])
     for i, t in enumerate(tasks, 1):
-        link = t.get("link") or t.get("url")
+        link = t.get("url")
         if not link:
             continue
-        row.append(InlineKeyboardButton(text=f"{btn_text} {i + len(customs)}", url=link))
+        completed = t.get("completed", False)
+        label = f"✅ {btn_text} {i + len(customs)}" if completed else f"{btn_text} {i + len(customs)}"
+        row.append(InlineKeyboardButton(text=label, url=link))
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -354,10 +340,11 @@ async def start(message: Message, state: FSMContext):
             count = int(get_setting("botohub_entry_count"))
         except Exception:
             count = 6
-        # проверяем, есть ли непройденные задачи
-        tasks = await bh_get_tasks(message.from_user.id, count)
+        data = await bh_get_tasks(message.from_user.id, count)
+        tasks = data.get("tasks", [])
         customs = list_custom_ops("entry")
-        if tasks or customs:
+        not_done = [t for t in tasks if not t.get("completed")]
+        if not_done or customs:
             await show_op_screen(message, message.from_user.id, "entry", "bh_entry_check")
             return
 
@@ -379,8 +366,10 @@ async def bh_entry_check(call: CallbackQuery):
 
     passed = False
     for i in range(3):
-        tasks = await bh_get_tasks(call.from_user.id, count)
-        if not tasks:
+        data = await bh_get_tasks(call.from_user.id, count)
+        tasks = data.get("tasks", [])
+        not_done = [t for t in tasks if not t.get("completed")]
+        if data.get("completed") or data.get("skip") or not not_done:
             passed = True
             break
         if i < 2:
@@ -566,18 +555,12 @@ async def task_check(call: CallbackQuery):
     user_id = call.from_user.id
     await call.answer()
 
-    # берём ссылку из последнего сообщения
-    try:
-        # не можем достать ссылку из кнопки, так что перезапрашиваем задачу
-        task = await get_next_task(user_id)
-        if not task:
-            await call.answer("Задание не найдено", show_alert=True)
-            return
-        link = task["link"]
-        reward = task["reward"]
-    except Exception:
-        await call.answer("Ошибка", show_alert=True)
+    task = await get_next_task(user_id)
+    if not task:
+        await call.answer("Задание не найдено", show_alert=True)
         return
+    link = task["link"]
+    reward = task["reward"]
 
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
@@ -654,9 +637,11 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
             count = int(get_setting("botohub_withdraw_count"))
         except Exception:
             count = 6
-        tasks = await bh_get_tasks(call.from_user.id, count)
+        data = await bh_get_tasks(call.from_user.id, count)
+        tasks = data.get("tasks", [])
         customs = list_custom_ops("withdraw")
-        if tasks or customs:
+        not_done = [t for t in tasks if not t.get("completed")]
+        if not_done or customs:
             await state.update_data(gift_key=key)
             await call.message.edit_text(
                 "✨ <b>Чтобы вывести звёзды, пройди проверку ниже:</b>",
@@ -682,8 +667,10 @@ async def bh_wd_check(call: CallbackQuery, state: FSMContext):
 
     passed = False
     for i in range(3):
-        tasks = await bh_get_tasks(call.from_user.id, count)
-        if not tasks:
+        data = await bh_get_tasks(call.from_user.id, count)
+        tasks = data.get("tasks", [])
+        not_done = [t for t in tasks if not t.get("completed")]
+        if data.get("completed") or data.get("skip") or not not_done:
             passed = True
             break
         if i < 2:
