@@ -17,7 +17,8 @@ from aiogram.fsm.context import FSMContext
 
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS, DB,
-    PIARFLOW_BASE_URL,
+    BOTOHUB_TOKEN, BOTOHUB_URL,
+    FLYER_KEY, FLYER_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -31,19 +32,20 @@ from database import (
     create_withdrawal, get_withdrawal, get_pending_withdrawals, set_withdrawal_status,
     get_withdrawal_history,
     get_stats, create_promo, get_promo, list_promos, delete_promo, activate_promo,
-    piarflow_mark_done, piarflow_is_done,
-    create_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
+    add_custom_op, list_custom_ops, delete_custom_op,
+    flyer_mark_done, flyer_is_done,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
-    promos_kb, tasks_admin_kb, user_view_kb, back_admin_kb, piarflow_kb,
+    promos_kb, user_view_kb, back_admin_kb,
+    bh_kb, fly_kb, cop_kb, cop_type_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-BOT_ID = int(BOT_TOKEN.split(":")[0])
+BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 
 # ============ СОСТОЯНИЯ ============
@@ -75,103 +77,88 @@ class GiveFlow(StatesGroup):
 class UserFind(StatesGroup):
     waiting_id = State()
 
-class PiarFlowEdit(StatesGroup):
-    waiting_key = State()
-    waiting_reward = State()
+class BHEdit(StatesGroup):
+    waiting_text = State()
+    waiting_btn = State()
     waiting_entry = State()
     waiting_wd = State()
 
-class TaskAdd(StatesGroup):
-    waiting_title = State()
-    waiting_link = State()
+class FlyEdit(StatesGroup):
     waiting_reward = State()
 
-class TaskDelete(StatesGroup):
+class CopAdd(StatesGroup):
+    waiting_title = State()
+    waiting_link = State()
+
+class CopDel(StatesGroup):
     waiting_id = State()
 
-class WithdrawFlow(StatesGroup):
-    waiting_sub = State()
+
+# ============ BOTOHUB (ОП) ============
+def bh_enabled():
+    return get_setting("botohub_enabled") == "1"
 
 
-# ============ PIARFLOW ============
-def pf_enabled():
-    return get_setting("piarflow_enabled") == "1"
-
-
-async def pf_get_sponsors(user_id, limit):
-    key = get_setting("piarflow_key")
-    if not key:
+async def bh_get_tasks(user_id, count):
+    """Запрашивает у Botohub список спонсоров для юзера."""
+    if not BOTOHUB_TOKEN:
         return []
     payload = {
+        "token": BOTOHUB_TOKEN,
         "user_id": user_id,
-        "chat_id": BOT_ID,
-        "max_sponsors": limit,
+        "max_tasks": count,
     }
-    headers = {"Authorization": f"Bearer {key}"}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(f"{PIARFLOW_BASE_URL}/sponsors",
-                              json=payload, headers=headers,
+            async with s.post(BOTOHUB_URL, json=payload,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                return data.get("tasks", data.get("sponsors", []))
+    except Exception as e:
+        print("Botohub error:", e)
+        return []
+
+
+async def bh_check_user(user_id, tasks):
+    """Проверка подписки по списку tasks. Возвращает True/False."""
+    if not tasks:
+        return True
+    return False  # проверяется повторным запросом (Botohub сам покажет кто не подписан)
+
+
+async def bh_all_done(user_id, count):
+    """Botohub возвращает только неподписанных. Если список пуст — всё пройдено."""
+    tasks = await bh_get_tasks(user_id, count)
+    return len(tasks) == 0
+
+
+# ============ FLYER (задания) ============
+def fly_enabled():
+    return get_setting("flyer_enabled") == "1"
+
+
+async def flyer_get_tasks(user_id):
+    if not FLYER_KEY:
+        return []
+    payload = {"key": FLYER_KEY, "user_id": user_id}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(FLYER_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
                 return data.get("sponsors", data.get("offers", []))
     except Exception as e:
-        print("PiarFlow sponsors error:", e)
+        print("Flyer error:", e)
         return []
 
 
-async def pf_check_links(user_id, links):
-    key = get_setting("piarflow_key")
-    if not key:
-        return {}
-    payload = {"user_id": user_id, "chat_id": BOT_ID, "links": links}
-    headers = {"Authorization": f"Bearer {key}"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(f"{PIARFLOW_BASE_URL}/sponsors/check",
-                              json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                result = {}
-                items = data.get("sponsors") or data.get("offers") or data.get("links") or []
-                for item in items:
-                    if isinstance(item, dict):
-                        link = item.get("link") or item.get("url")
-                        status = item.get("status") or item.get("subscribed")
-                        if link:
-                            result[link] = status
-                return result
-    except Exception as e:
-        print("PiarFlow check error:", e)
-        return {}
-
-
-async def pf_check_one(user_id, link):
-    result = await pf_check_links(user_id, [link])
-    return result.get(link) in ("subscribed", True, "ok", "active")
-
-
-async def pf_all_passed_once(user_id, links):
-    if not links:
-        return True
-    result = await pf_check_links(user_id, links)
-    for link in links:
-        if result.get(link) not in ("subscribed", True, "ok", "active"):
-            return False
-    return True
-
-
-async def pf_all_passed(user_id, links, retries=3, delay=7):
-    """Проверяет с повторами. 3 × 7 = 21 секунда."""
-    if not links:
-        return True
-    for i in range(retries):
-        ok = await pf_all_passed_once(user_id, links)
-        if ok:
-            return True
-        if i < retries - 1:
-            await asyncio.sleep(delay)
-    return False
+async def flyer_check_one(user_id, link):
+    tasks = await flyer_get_tasks(user_id)
+    for t in tasks:
+        if (t.get("link") or t.get("url")) == link:
+            status = t.get("status") or t.get("subscribed")
+            return status in ("subscribed", True, "ok", "active")
+    return True  # нет в списке — значит подписан
 
 
 # ============ БЭКАП ============
@@ -194,17 +181,17 @@ def export_users_to_json():
                    for r in cur.fetchall()]
     cur.execute("SELECT key, value FROM settings")
     settings = {r[0]: r[1] for r in cur.fetchall()}
-    cur.execute("SELECT user_id, link, done_at FROM piarflow_done")
-    pf_done = [{"user_id": r[0], "link": r[1], "done_at": r[2]} for r in cur.fetchall()]
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks")
-    custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4]}
-                    for r in cur.fetchall()]
+    cur.execute("SELECT user_id, link, done_at FROM flyer_done")
+    fl_done = [{"user_id": r[0], "link": r[1], "done_at": r[2]} for r in cur.fetchall()]
+    cur.execute("SELECT id, title, link, type, active FROM custom_ops")
+    custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
+                  for r in cur.fetchall()]
     conn.close()
     return {
         "exported_at": datetime.now().isoformat(),
         "users": users, "referrals": referrals, "promos": promos,
         "withdrawals": withdrawals, "settings": settings,
-        "piarflow_done": pf_done, "custom_tasks": custom_tasks,
+        "flyer_done": fl_done, "custom_ops": custom_ops,
     }
 
 
@@ -232,13 +219,13 @@ def import_users_from_json(data):
     for w in data.get("withdrawals", []):
         cur.execute("INSERT INTO withdrawals (user_id, amount, gift, status, created_at) VALUES (?,?,?,?,?)",
                     (w["user_id"], w["amount"], w.get("gift"), w.get("status", "pending"), w.get("created_at")))
-    for pd in data.get("piarflow_done", []):
-        cur.execute("INSERT OR IGNORE INTO piarflow_done (user_id, link, done_at) VALUES (?,?,?)",
-                    (pd["user_id"], pd["link"], pd.get("done_at")))
-    cur.execute("DELETE FROM custom_tasks")
-    for ct in data.get("custom_tasks", []):
-        cur.execute("INSERT INTO custom_tasks (title, link, reward, active) VALUES (?,?,?,?)",
-                    (ct["title"], ct["link"], ct["reward"], ct.get("active", 1)))
+    for fd in data.get("flyer_done", []):
+        cur.execute("INSERT OR IGNORE INTO flyer_done (user_id, link, done_at) VALUES (?,?,?)",
+                    (fd["user_id"], fd["link"], fd.get("done_at")))
+    cur.execute("DELETE FROM custom_ops")
+    for co in data.get("custom_ops", []):
+        cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?,?,?,?)",
+                    (co["title"], co["link"], co["type"], co.get("active", 1)))
     conn.commit()
     conn.close()
     return count
@@ -271,6 +258,62 @@ def build_priv_buttons():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def build_op_kb(user_id, count, op_type, source):
+    """Собирает кнопки из своих ОП + Botohub задач."""
+    buttons = []
+    row = []
+    btn_text = get_setting("botohub_btn_text")
+    # Свои ОП
+    customs = list_custom_ops(op_type)
+    for i, (cid, title, link) in enumerate(customs, 1):
+        row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    # Botohub
+    return buttons, row
+
+
+async def show_op_screen(message, user_id, op_type, cb_data_confirm):
+    """Показывает экран ОП: свои каналы + Botohub задачи."""
+    count_key = "botohub_entry_count" if op_type == "entry" else "botohub_withdraw_count"
+    try:
+        count = int(get_setting(count_key))
+    except Exception:
+        count = 6
+
+    buttons = []
+    row = []
+
+    # Свои каналы (если есть)
+    customs = list_custom_ops(op_type)
+    btn_text = get_setting("botohub_btn_text")
+    for i, (cid, title, link) in enumerate(customs, 1):
+        row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+
+    # Botohub спонсоры
+    tasks = await bh_get_tasks(user_id, count)
+    for i, t in enumerate(tasks, 1):
+        link = t.get("link") or t.get("url")
+        if not link:
+            continue
+        row.append(InlineKeyboardButton(text=f"{btn_text} {i + len(customs)}", url=link))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data=cb_data_confirm)])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    text = get_setting("botohub_text")
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
 # ============ СТАРТ ============
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
@@ -296,6 +339,7 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
+    # Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -304,65 +348,48 @@ async def start(message: Message, state: FSMContext):
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    if pf_enabled():
+    # ОП на входе
+    if bh_enabled() and BOTOHUB_TOKEN:
         try:
-            limit = int(get_setting("piarflow_entry_count"))
+            count = int(get_setting("botohub_entry_count"))
         except Exception:
-            limit = 6
-        sponsors = await pf_get_sponsors(message.from_user.id, limit)
-        if sponsors:
-            links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-            passed = await pf_all_passed_once(message.from_user.id, links)
-            if not passed:
-                await show_pf_sponsors(message, sponsors, "entry")
-                return
+            count = 6
+        # проверяем, есть ли непройденные задачи
+        tasks = await bh_get_tasks(message.from_user.id, count)
+        customs = list_custom_ops("entry")
+        if tasks or customs:
+            await show_op_screen(message, message.from_user.id, "entry", "bh_entry_check")
+            return
 
     welcome = get_setting("welcome_text")
     await message.answer(welcome, reply_markup=main_menu())
 
 
-async def show_pf_sponsors(message, sponsors, context):
-    buttons = []
-    row = []
-    for s in sponsors:
-        link = s.get("link") or s.get("url")
-        name = s.get("name") or s.get("title") or "Подписаться"
-        if not link:
-            continue
-        row.append(InlineKeyboardButton(text=f"📢 {name}", url=link))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    if context == "entry":
-        buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data="pf_entry_check")])
-    elif context == "withdraw":
-        buttons.append([InlineKeyboardButton(text="✅ Подтвердить", callback_data="pf_wd_check")])
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    text = ("✨ <b>Подпишись на спонсоров ниже</b>\n\n"
-            "После подписки нажми «✅ Подтвердить» 👇")
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "pf_entry_check")
-async def pf_entry_check(call: CallbackQuery):
+@dp.callback_query(F.data == "bh_entry_check")
+async def bh_entry_check(call: CallbackQuery):
     await call.answer()
-    limit = int(get_setting("piarflow_entry_count"))
-    sponsors = await pf_get_sponsors(call.from_user.id, limit)
-    links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-
+    try:
+        count = int(get_setting("botohub_entry_count"))
+    except Exception:
+        count = 6
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
 
-    passed = await pf_all_passed(call.from_user.id, links, retries=3, delay=7)
+    passed = False
+    for i in range(3):
+        tasks = await bh_get_tasks(call.from_user.id, count)
+        if not tasks:
+            passed = True
+            break
+        if i < 2:
+            await asyncio.sleep(7)
 
     if not passed:
         if msg:
             try:
-                await msg.edit_text("❌ Ты ещё не подписался на все каналы. Попробуй ещё раз.")
+                await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
             except Exception:
                 pass
         return
@@ -476,9 +503,12 @@ async def user_promo_check(message: Message, state: FSMContext):
         await message.answer(msg)
 
 
-# ============ ЗАДАНИЯ ============
+# ============ ЗАДАНИЯ (FLYER) ============
 @dp.message(F.text == "📋 Задания")
 async def tasks_menu(message: Message):
+    if not fly_enabled():
+        await message.answer("❌ Задания временно недоступны.")
+        return
     await message.answer("⏳ Ищу новое задание...")
     task = await get_next_task(message.from_user.id)
     if not task:
@@ -488,33 +518,21 @@ async def tasks_menu(message: Message):
 
 
 async def get_next_task(user_id):
-    if pf_enabled():
-        try:
-            limit = int(get_setting("piarflow_task_limit") or 20)
-        except Exception:
-            limit = 20
-        sponsors = await pf_get_sponsors(user_id, limit)
-        for s in sponsors:
-            link = s.get("link") or s.get("url")
-            if not link:
-                continue
-            if piarflow_is_done(user_id, link):
-                continue
-            status = s.get("status") or s.get("subscribed")
-            if status in ("subscribed", True, "ok", "active"):
-                piarflow_mark_done(user_id, link)
-                continue
-            reward = int(get_setting("piarflow_task_reward"))
-            return {"type": "pf", "id": link, "link": link, "reward": reward}
-
-    for t in list_custom_tasks():
-        tid, title, link, reward, active = t
-        if not active:
+    if not fly_enabled():
+        return None
+    tasks = await flyer_get_tasks(user_id)
+    for t in tasks:
+        link = t.get("link") or t.get("url")
+        if not link:
             continue
-        if piarflow_is_done(user_id, f"custom_{tid}"):
+        if flyer_is_done(user_id, link):
             continue
-        return {"type": "custom", "id": f"custom_{tid}", "link": link,
-                "reward": reward, "title": title}
+        status = t.get("status") or t.get("subscribed")
+        if status in ("subscribed", True, "ok", "active"):
+            flyer_mark_done(user_id, link)
+            continue
+        reward = int(get_setting("flyer_task_reward"))
+        return {"link": link, "reward": reward}
     return None
 
 
@@ -526,7 +544,7 @@ async def show_task(message, task):
         f"❌ За отписку или блокировку ресурса, вы получите бан\n\n"
         f"<b>Вознаграждение: +{reward} 🌟</b>"
     )
-    kb = task_kb(task["link"], str(task["id"]))
+    kb = task_kb(task["link"])
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -543,25 +561,24 @@ async def task_skip(call: CallbackQuery):
     await show_task(call.message, task)
 
 
-@dp.callback_query(F.data.startswith("task_check:"))
+@dp.callback_query(F.data == "task_check")
 async def task_check(call: CallbackQuery):
-    source = call.data.split(":", 1)[1]
     user_id = call.from_user.id
+    await call.answer()
 
-    if source.startswith("custom_"):
-        tid = int(source.replace("custom_", ""))
-        t = get_custom_task(tid)
-        if not t:
+    # берём ссылку из последнего сообщения
+    try:
+        # не можем достать ссылку из кнопки, так что перезапрашиваем задачу
+        task = await get_next_task(user_id)
+        if not task:
             await call.answer("Задание не найдено", show_alert=True)
             return
-        _, title, link, reward, active = t
-        key = f"custom_{tid}"
-    else:
-        link = source
-        reward = int(get_setting("piarflow_task_reward"))
-        key = link
+        link = task["link"]
+        reward = task["reward"]
+    except Exception:
+        await call.answer("Ошибка", show_alert=True)
+        return
 
-    await call.answer()
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
@@ -569,7 +586,7 @@ async def task_check(call: CallbackQuery):
 
     subscribed = False
     for i in range(3):
-        subscribed = await pf_check_one(user_id, link)
+        subscribed = await flyer_check_one(user_id, link)
         if subscribed:
             break
         if i < 2:
@@ -583,7 +600,7 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    if piarflow_is_done(user_id, key):
+    if flyer_is_done(user_id, link):
         if msg:
             try:
                 await msg.edit_text("✅ Уже засчитано")
@@ -591,7 +608,7 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    piarflow_mark_done(user_id, key)
+    flyer_mark_done(user_id, link)
     add_balance(user_id, reward)
 
     if msg:
@@ -605,9 +622,9 @@ async def task_check(call: CallbackQuery):
         pass
     await call.message.answer(f"✅ Задание выполнено! +{reward} ⭐")
 
-    task = await get_next_task(user_id)
-    if task:
-        await show_task(call.message, task)
+    next_task = await get_next_task(user_id)
+    if next_task:
+        await show_task(call.message, next_task)
 
 
 # ============ ВЫВОД ============
@@ -632,41 +649,45 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                           show_alert=True)
         return
 
-    if pf_enabled():
+    if bh_enabled() and BOTOHUB_TOKEN:
         try:
-            limit = int(get_setting("piarflow_withdraw_count"))
+            count = int(get_setting("botohub_withdraw_count"))
         except Exception:
-            limit = 6
-        sponsors = await pf_get_sponsors(call.from_user.id, limit)
-        if sponsors:
-            links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
-            passed = await pf_all_passed_once(call.from_user.id, links)
-            if not passed:
-                await state.update_data(gift_key=key)
-                await state.set_state(WithdrawFlow.waiting_sub)
-                await call.message.edit_text(
-                    "✨ <b>Чтобы вывести звёзды, пройди проверку ниже:</b>\n\n"
-                    "📢 Подпишись на спонсоров и нажми «✅ Подтвердить»",
-                    parse_mode="HTML")
-                await show_pf_sponsors(call.message, sponsors, "withdraw")
-                return
+            count = 6
+        tasks = await bh_get_tasks(call.from_user.id, count)
+        customs = list_custom_ops("withdraw")
+        if tasks or customs:
+            await state.update_data(gift_key=key)
+            await call.message.edit_text(
+                "✨ <b>Чтобы вывести звёзды, пройди проверку ниже:</b>",
+                parse_mode="HTML")
+            await show_op_screen(call.message, call.from_user.id, "withdraw", "bh_wd_check")
+            return
 
     await create_order(call, key)
 
 
-@dp.callback_query(F.data == "pf_wd_check")
-async def pf_wd_check(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "bh_wd_check")
+async def bh_wd_check(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    limit = int(get_setting("piarflow_withdraw_count"))
-    sponsors = await pf_get_sponsors(call.from_user.id, limit)
-    links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
+    try:
+        count = int(get_setting("botohub_withdraw_count"))
+    except Exception:
+        count = 6
 
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
 
-    passed = await pf_all_passed(call.from_user.id, links, retries=3, delay=7)
+    passed = False
+    for i in range(3):
+        tasks = await bh_get_tasks(call.from_user.id, count)
+        if not tasks:
+            passed = True
+            break
+        if i < 2:
+            await asyncio.sleep(7)
 
     if not passed:
         if msg:
@@ -751,69 +772,85 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# --- PIARFLOW ---
-def pf_menu_text():
-    enabled = pf_enabled()
-    key = get_setting("piarflow_key")
+# --- BOTOHUB ---
+def bh_menu_text():
+    enabled = bh_enabled()
     return (
-        f"🎯 <b>PiarFlow</b>\n\n"
+        f"🎯 <b>Botohub ОП</b>\n\n"
         f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
-        f"🔑 Ключ: <code>{key[:20]}...</code>\n"
-        f"🆔 Chat ID: <code>{BOT_ID}</code>\n\n"
-        f"📥 ОП на входе: <b>{get_setting('piarflow_entry_count')}</b>\n"
-        f"💸 ОП на выводе: <b>{get_setting('piarflow_withdraw_count')}</b>\n"
-        f"💰 Награда за задание: <b>{get_setting('piarflow_task_reward')}</b> ⭐"
+        f"🔑 Токен: <code>{BOTOHUB_TOKEN[:20]}...</code>\n\n"
+        f"📥 ОП на входе: <b>{get_setting('botohub_entry_count')}</b>\n"
+        f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n"
+        f"🔤 Текст кнопок: <code>{get_setting('botohub_btn_text')}</code>\n\n"
+        f"📝 Текст:\n<i>{get_setting('botohub_text')[:80]}...</i>"
     )
 
 
-@dp.callback_query(F.data == "piarflow_menu")
-async def piarflow_menu(call: CallbackQuery):
+@dp.callback_query(F.data == "bh_menu")
+async def bh_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.edit_text(pf_menu_text(),
-                                 reply_markup=piarflow_kb(pf_enabled()),
+    await call.message.edit_text(bh_menu_text(),
+                                 reply_markup=bh_kb(bh_enabled()),
                                  parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "pf_toggle")
-async def pf_toggle(call: CallbackQuery):
+@dp.callback_query(F.data == "bh_toggle")
+async def bh_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    current = get_setting("piarflow_enabled") == "1"
-    set_setting("piarflow_enabled", "0" if current else "1")
+    current = get_setting("botohub_enabled") == "1"
+    set_setting("botohub_enabled", "0" if current else "1")
     await call.answer("✅ Изменено")
-    await call.message.edit_text(pf_menu_text(),
-                                 reply_markup=piarflow_kb(not current),
+    await call.message.edit_text(bh_menu_text(),
+                                 reply_markup=bh_kb(not current),
                                  parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "pf_edit_key")
-async def pf_edit_key(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "bh_edit_text")
+async def bh_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🔑 Пришли новый API-ключ PiarFlow:")
-    await state.set_state(PiarFlowEdit.waiting_key)
+    await call.message.answer("✏️ Пришли новый текст для ОП:")
+    await state.set_state(BHEdit.waiting_text)
 
 
-@dp.message(PiarFlowEdit.waiting_key)
-async def pf_save_key(message: Message, state: FSMContext):
+@dp.message(BHEdit.waiting_text)
+async def bh_save_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    set_setting("piarflow_key", message.text.strip())
+    set_setting("botohub_text", message.text)
     await state.clear()
-    await message.answer("✅ Ключ сохранён", reply_markup=back_admin_kb())
+    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
 
 
-@dp.callback_query(F.data == "pf_edit_reward")
-async def pf_edit_reward(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "bh_edit_btn")
+async def bh_edit_btn(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("💰 Сколько звёзд давать за задание PiarFlow?")
-    await state.set_state(PiarFlowEdit.waiting_reward)
+    await call.message.answer("🔤 Пришли текст для кнопок (например, «📢 Спонсор»):")
+    await state.set_state(BHEdit.waiting_btn)
 
 
-@dp.message(PiarFlowEdit.waiting_reward)
-async def pf_save_reward(message: Message, state: FSMContext):
+@dp.message(BHEdit.waiting_btn)
+async def bh_save_btn(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    set_setting("botohub_btn_text", message.text.strip())
+    await state.clear()
+    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "bh_edit_entry")
+async def bh_edit_entry(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("📥 Сколько спонсоров на входе?")
+    await state.set_state(BHEdit.waiting_entry)
+
+
+@dp.message(BHEdit.waiting_entry)
+async def bh_save_entry(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
@@ -821,143 +858,174 @@ async def pf_save_reward(message: Message, state: FSMContext):
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
-    set_setting("piarflow_task_reward", val)
+    set_setting("botohub_entry_count", val)
+    await state.clear()
+    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "bh_edit_wd")
+async def bh_edit_wd(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("💸 Сколько спонсоров на выводе?")
+    await state.set_state(BHEdit.waiting_wd)
+
+
+@dp.message(BHEdit.waiting_wd)
+async def bh_save_wd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    set_setting("botohub_withdraw_count", val)
+    await state.clear()
+    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
+
+
+# --- FLYER ---
+def fly_menu_text():
+    enabled = fly_enabled()
+    return (
+        f"🎯 <b>Flyer задания</b>\n\n"
+        f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
+        f"🔑 Ключ: <code>{FLYER_KEY[:20]}...</code>\n\n"
+        f"💰 Награда за задание: <b>{get_setting('flyer_task_reward')}</b> ⭐"
+    )
+
+
+@dp.callback_query(F.data == "fly_menu")
+async def fly_menu(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.edit_text(fly_menu_text(),
+                                 reply_markup=fly_kb(fly_enabled()),
+                                 parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "fly_toggle")
+async def fly_toggle(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    current = get_setting("flyer_enabled") == "1"
+    set_setting("flyer_enabled", "0" if current else "1")
+    await call.answer("✅ Изменено")
+    await call.message.edit_text(fly_menu_text(),
+                                 reply_markup=fly_kb(not current),
+                                 parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "fly_edit_reward")
+async def fly_edit_reward(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("💰 Сколько звёзд давать за задание?")
+    await state.set_state(FlyEdit.waiting_reward)
+
+
+@dp.message(FlyEdit.waiting_reward)
+async def fly_save_reward(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    set_setting("flyer_task_reward", val)
     await state.clear()
     await message.answer(f"✅ Награда: {val} ⭐", reply_markup=back_admin_kb())
 
 
-@dp.callback_query(F.data == "pf_edit_entry")
-async def pf_edit_entry(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer("📥 Сколько ОП показывать на входе?")
-    await state.set_state(PiarFlowEdit.waiting_entry)
-
-
-@dp.message(PiarFlowEdit.waiting_entry)
-async def pf_save_entry(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        val = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
-    set_setting("piarflow_entry_count", val)
-    await state.clear()
-    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "pf_edit_wd")
-async def pf_edit_wd(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer("💸 Сколько ОП показывать на выводе?")
-    await state.set_state(PiarFlowEdit.waiting_wd)
-
-
-@dp.message(PiarFlowEdit.waiting_wd)
-async def pf_save_wd(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        val = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
-    set_setting("piarflow_withdraw_count", val)
-    await state.clear()
-    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
-
-
-# --- СВОИ ЗАДАНИЯ ---
-@dp.callback_query(F.data == "tasks_menu")
-async def tasks_menu_admin(call: CallbackQuery):
+# --- СВОИ ОП ---
+@dp.callback_query(F.data == "cop_menu")
+async def cop_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.edit_text(
-        "📌 <b>Свои задания</b>\n\nЗдесь ты создаёшь задания, которые показываются юзерам.",
-        reply_markup=tasks_admin_kb(), parse_mode="HTML")
+        "📌 <b>Свои ОП</b>\n\nВыбери, куда добавить:",
+        reply_markup=cop_type_kb(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "task_add")
-async def task_add(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("cop_menu:"))
+async def cop_menu_type(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("📝 Название задания (например, «Подпишись на канал»):")
-    await state.set_state(TaskAdd.waiting_title)
+    op_type = call.data.split(":")[1]
+    title = "входе" if op_type == "entry" else "выводе"
+    await call.message.edit_text(
+        f"📌 <b>Свои ОП (на {title})</b>",
+        reply_markup=cop_kb(op_type), parse_mode="HTML")
 
 
-@dp.message(TaskAdd.waiting_title)
-async def task_add_title(message: Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("cop_add:"))
+async def cop_add(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    op_type = call.data.split(":")[1]
+    await state.update_data(op_type=op_type)
+    await call.message.answer("📝 Название (для себя):")
+    await state.set_state(CopAdd.waiting_title)
+
+
+@dp.message(CopAdd.waiting_title)
+async def cop_add_title(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    await state.update_data(t_title=message.text.strip())
-    await message.answer("🔗 Ссылка на канал (https://t.me/...):")
-    await state.set_state(TaskAdd.waiting_link)
+    await state.update_data(cop_title=message.text.strip())
+    await message.answer("🔗 Ссылка (https://t.me/...):")
+    await state.set_state(CopAdd.waiting_link)
 
 
-@dp.message(TaskAdd.waiting_link)
-async def task_add_link(message: Message, state: FSMContext):
+@dp.message(CopAdd.waiting_link)
+async def cop_add_link(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     link = message.text.strip()
     if not link.startswith("http"):
         await message.answer("⚠️ Ссылка должна начинаться с http.")
         return
-    await state.update_data(t_link=link)
-    await message.answer("💰 Сколько звёзд за выполнение?")
-    await state.set_state(TaskAdd.waiting_reward)
-
-
-@dp.message(TaskAdd.waiting_reward)
-async def task_add_reward(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        reward = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
     data = await state.get_data()
-    create_custom_task(data["t_title"], data["t_link"], reward)
+    add_custom_op(data["cop_title"], link, data.get("op_type", "entry"))
     await state.clear()
-    await message.answer("✅ Задание создано", reply_markup=back_admin_kb())
+    await message.answer("✅ Добавлено", reply_markup=back_admin_kb())
 
 
-@dp.callback_query(F.data == "task_list")
-async def task_list_admin(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("cop_list:"))
+async def cop_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    rows = list_custom_tasks()
+    op_type = call.data.split(":")[1]
+    rows = list_custom_ops(op_type)
     if not rows:
         await call.answer("Пусто", show_alert=True)
         return
-    text = "📜 <b>Свои задания</b>\n\n"
-    for tid, title, link, reward, active in rows:
-        icon = "🟢" if active else "🔴"
-        text += f"{icon} #{tid} — {title} — {reward}⭐\n{link}\n\n"
+    text = "📜 <b>Свои ОП</b>\n\n"
+    for cid, title, link in rows:
+        text += f"#{cid} — {title}\n{link}\n\n"
     await call.message.answer(text, parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "task_delete")
-async def task_delete(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("cop_del:"))
+async def cop_del(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🗑 Пришли ID задания для удаления:")
-    await state.set_state(TaskDelete.waiting_id)
+    await call.message.answer("🗑 Пришли ID для удаления:")
+    await state.set_state(CopDel.waiting_id)
 
 
-@dp.message(TaskDelete.waiting_id)
-async def task_delete_id(message: Message, state: FSMContext):
+@dp.message(CopDel.waiting_id)
+async def cop_del_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        tid = int(message.text.strip())
+        cid = int(message.text.strip())
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
-    delete_custom_task(tid)
+    delete_custom_op(cid)
     await state.clear()
     await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
 
@@ -969,7 +1037,7 @@ async def backup_help(call: CallbackQuery):
         return
     await call.message.edit_text(
         "📦 <b>Бэкап</b>\n\n"
-        "📤 <b>Выгрузка:</b> команда <code>/backup</code> — бот пришлёт JSON.\n\n"
+        "📤 <b>Выгрузка:</b> команда <code>/backup</code>.\n\n"
         "📥 <b>Загрузка:</b> просто отправь боту JSON-файл.",
         reply_markup=back_admin_kb(), parse_mode="HTML")
 
@@ -990,7 +1058,7 @@ async def backup_cmd(message: Message):
                      f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
                      f"🎟 Промокодов: <b>{len(data['promos'])}</b>\n"
                      f"💸 Заявок: <b>{len(data['withdrawals'])}</b>\n"
-                     f"📌 Своих заданий: <b>{len(data['custom_tasks'])}</b>"),
+                     f"📌 Своих ОП: <b>{len(data['custom_ops'])}</b>"),
             parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
