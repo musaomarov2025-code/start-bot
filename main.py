@@ -43,6 +43,9 @@ from keyboards import (
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# ID бота (берём из токена — цифры до «:»)
+BOT_ID = int(BOT_TOKEN.split(":")[0])
+
 
 # ============ СОСТОЯНИЯ ============
 class PromoCreate(StatesGroup):
@@ -87,6 +90,9 @@ class TaskAdd(StatesGroup):
 class TaskDelete(StatesGroup):
     waiting_id = State()
 
+class WithdrawFlow(StatesGroup):
+    waiting_sub = State()
+
 
 # ============ PIARFLOW ============
 def pf_enabled():
@@ -99,7 +105,7 @@ async def pf_get_sponsors(user_id, limit):
         return []
     payload = {
         "user_id": user_id,
-        "chat_id": user_id,
+        "chat_id": BOT_ID,
         "max_sponsors": limit,
     }
     headers = {"Authorization": f"Bearer {key}"}
@@ -109,18 +115,35 @@ async def pf_get_sponsors(user_id, limit):
                               json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
+                # ОТЛАДКА
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔍 <b>PiarFlow sponsors</b>\n\n"
+                        f"user_id: <code>{user_id}</code>\n"
+                        f"chat_id: <code>{BOT_ID}</code>\n"
+                        f"limit: {limit}\n\n"
+                        f"Ответ:\n<code>{str(data)[:700]}</code>",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
                 return data.get("sponsors", data.get("offers", []))
     except Exception as e:
         print("PiarFlow sponsors error:", e)
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"❌ <b>PiarFlow sponsors error</b>\n<code>{e}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return []
 
 
 async def pf_check_links(user_id, links):
-    """Возвращает dict {link: 'subscribed'/'unsubscribed'/'not_counted'}"""
     key = get_setting("piarflow_key")
     if not key:
         return {}
-    payload = {"user_id": user_id, "links": links}
+    payload = {"user_id": user_id, "chat_id": BOT_ID, "links": links}
     headers = {"Authorization": f"Bearer {key}"}
     try:
         async with aiohttp.ClientSession() as s:
@@ -128,23 +151,42 @@ async def pf_check_links(user_id, links):
                               json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
+                # ОТЛАДКА
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔍 <b>PiarFlow check</b>\n\n"
+                        f"user_id: <code>{user_id}</code>\n"
+                        f"chat_id: <code>{BOT_ID}</code>\n"
+                        f"links: <code>{links}</code>\n\n"
+                        f"Ответ:\n<code>{str(data)[:700]}</code>",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
                 result = {}
-                for item in data.get("sponsors", data.get("offers", [])):
-                    link = item.get("link") or item.get("url")
-                    if link:
-                        result[link] = item.get("status") or item.get("subscribed")
+                items = data.get("sponsors") or data.get("offers") or data.get("links") or []
+                for item in items:
+                    if isinstance(item, dict):
+                        link = item.get("link") or item.get("url")
+                        status = item.get("status") or item.get("subscribed")
+                        if link:
+                            result[link] = status
                 return result
     except Exception as e:
         print("PiarFlow check error:", e)
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"❌ <b>PiarFlow check error</b>\n<code>{e}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return {}
 
 
 async def pf_check_one(user_id, link):
     result = await pf_check_links(user_id, [link])
     status = result.get(link)
-    if status in ("subscribed", True):
-        return True
-    return False
+    return status in ("subscribed", True, "ok", "active")
 
 
 async def pf_all_passed(user_id, links):
@@ -152,7 +194,7 @@ async def pf_all_passed(user_id, links):
         return True
     result = await pf_check_links(user_id, links)
     for link in links:
-        if result.get(link) not in ("subscribed", True):
+        if result.get(link) not in ("subscribed", True, "ok", "active"):
             return False
     return True
 
@@ -279,7 +321,6 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -288,7 +329,6 @@ async def start(message: Message, state: FSMContext):
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    # PiarFlow ОП на входе
     if pf_enabled():
         try:
             limit = int(get_setting("piarflow_entry_count"))
@@ -296,7 +336,7 @@ async def start(message: Message, state: FSMContext):
             limit = 6
         sponsors = await pf_get_sponsors(message.from_user.id, limit)
         if sponsors:
-            links = [s.get("link") or s.get("url") for s in sponsors]
+            links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
             passed = await pf_all_passed(message.from_user.id, links)
             if not passed:
                 await show_pf_sponsors(message, sponsors, "entry")
@@ -307,7 +347,6 @@ async def start(message: Message, state: FSMContext):
 
 
 async def show_pf_sponsors(message, sponsors, context):
-    """Показывает список спонсоров с кнопкой проверки"""
     buttons = []
     row = []
     for s in sponsors:
@@ -326,10 +365,8 @@ async def show_pf_sponsors(message, sponsors, context):
     elif context == "withdraw":
         buttons.append([InlineKeyboardButton(text="✅ Подтвердить", callback_data="pf_wd_check")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    text = (
-        "✨ <b>Подпишись на спонсоров ниже</b>\n\n"
-        "После подписки нажми «✅ Подтвердить» 👇"
-    )
+    text = ("✨ <b>Подпишись на спонсоров ниже</b>\n\n"
+            "После подписки нажми «✅ Подтвердить» 👇")
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -337,7 +374,7 @@ async def show_pf_sponsors(message, sponsors, context):
 async def pf_entry_check(call: CallbackQuery):
     limit = int(get_setting("piarflow_entry_count"))
     sponsors = await pf_get_sponsors(call.from_user.id, limit)
-    links = [s.get("link") or s.get("url") for s in sponsors]
+    links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
     passed = await pf_all_passed(call.from_user.id, links)
     if not passed:
         await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
@@ -458,8 +495,6 @@ async def tasks_menu(message: Message):
 
 
 async def get_next_task(user_id):
-    """Возвращает dict: {'type': 'pf'/'custom', 'id': id, 'link': ..., 'reward': ...}"""
-    # 1. PiarFlow
     if pf_enabled():
         try:
             limit = int(get_setting("piarflow_task_limit") or 20)
@@ -473,13 +508,12 @@ async def get_next_task(user_id):
             if piarflow_is_done(user_id, link):
                 continue
             status = s.get("status") or s.get("subscribed")
-            if status in ("subscribed", True):
+            if status in ("subscribed", True, "ok", "active"):
                 piarflow_mark_done(user_id, link)
                 continue
             reward = int(get_setting("piarflow_task_reward"))
             return {"type": "pf", "id": link, "link": link, "reward": reward}
 
-    # 2. Свои задания
     for t in list_custom_tasks():
         tid, title, link, reward, active = t
         if not active:
@@ -505,7 +539,10 @@ async def show_task(message, task):
 
 @dp.callback_query(F.data == "task_skip")
 async def task_skip(call: CallbackQuery):
-    await call.message.delete()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
     task = await get_next_task(call.from_user.id)
     if not task:
         await call.message.answer("❌ Больше нет заданий.")
@@ -531,7 +568,6 @@ async def task_check(call: CallbackQuery):
         reward = int(get_setting("piarflow_task_reward"))
         key = link
 
-    # Проверка PiarFlow
     subscribed = await pf_check_one(user_id, link)
     if not subscribed:
         await call.answer("❌ Ты ещё не подписался!", show_alert=True)
@@ -577,7 +613,6 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                           show_alert=True)
         return
 
-    # ОП на выводе
     if pf_enabled():
         try:
             limit = int(get_setting("piarflow_withdraw_count"))
@@ -585,7 +620,7 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
             limit = 6
         sponsors = await pf_get_sponsors(call.from_user.id, limit)
         if sponsors:
-            links = [s.get("link") or s.get("url") for s in sponsors]
+            links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
             passed = await pf_all_passed(call.from_user.id, links)
             if not passed:
                 await state.update_data(gift_key=key)
@@ -593,7 +628,7 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                 await call.message.edit_text(
                     "✨ <b>Чтобы вывести звёзды, пройди проверку ниже:</b>\n\n"
                     "📢 Подпишись на спонсоров и нажми «✅ Подтвердить»",
-                    reply_markup=None, parse_mode="HTML")
+                    parse_mode="HTML")
                 await show_pf_sponsors(call.message, sponsors, "withdraw")
                 return
 
@@ -604,7 +639,7 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
 async def pf_wd_check(call: CallbackQuery, state: FSMContext):
     limit = int(get_setting("piarflow_withdraw_count"))
     sponsors = await pf_get_sponsors(call.from_user.id, limit)
-    links = [s.get("link") or s.get("url") for s in sponsors]
+    links = [s.get("link") or s.get("url") for s in sponsors if (s.get("link") or s.get("url"))]
     passed = await pf_all_passed(call.from_user.id, links)
     if not passed:
         await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
@@ -681,7 +716,8 @@ def pf_menu_text():
     return (
         f"🎯 <b>PiarFlow</b>\n\n"
         f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
-        f"🔑 Ключ: <code>{key[:20]}...</code>\n\n"
+        f"🔑 Ключ: <code>{key[:20]}...</code>\n"
+        f"🆔 Chat ID: <code>{BOT_ID}</code>\n\n"
         f"📥 ОП на входе: <b>{get_setting('piarflow_entry_count')}</b>\n"
         f"💸 ОП на выводе: <b>{get_setting('piarflow_withdraw_count')}</b>\n"
         f"💰 Награда за задание: <b>{get_setting('piarflow_task_reward')}</b> ⭐"
@@ -794,7 +830,7 @@ async def pf_save_wd(message: Message, state: FSMContext):
 
 # --- СВОИ ЗАДАНИЯ ---
 @dp.callback_query(F.data == "tasks_menu")
-async def tasks_menu(call: CallbackQuery):
+async def tasks_menu_admin(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.edit_text(
@@ -848,7 +884,7 @@ async def task_add_reward(message: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data == "task_list")
-async def task_list(call: CallbackQuery):
+async def task_list_admin(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     rows = list_custom_tasks()
@@ -1436,6 +1472,7 @@ async def main():
     init_db()
     asyncio.create_task(referral_watcher())
     print("Бот запущен")
+    print(f"BOT_ID: {BOT_ID}")
     await dp.start_polling(bot)
 
 
