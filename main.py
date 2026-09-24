@@ -1,17 +1,21 @@
 import asyncio
+import json
+import os
+from datetime import datetime
 from urllib.parse import quote
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ChatJoinRequest
+    FSInputFile
 )
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from config import BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS
+from config import BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS, DB
 from database import (
     init_db, get_setting, set_setting,
     get_user, add_user, update_username, add_balance, get_balance,
@@ -23,15 +27,12 @@ from database import (
     get_refs_to_remind, mark_reminded,
     create_withdrawal, get_withdrawal, get_pending_withdrawals, set_withdrawal_status,
     get_withdrawal_history,
-    get_channels, get_channel_by_id, add_channel, delete_channel, clear_channels,
-    track_channel_join, get_channel_joins, get_stats,
-    save_join_request, has_recent_join_request, cleanup_join_requests,
-    create_promo, get_promo, list_promos, delete_promo, activate_promo,
+    get_stats, create_promo, get_promo, list_promos, delete_promo, activate_promo,
 )
 from keyboards import (
-    main_menu, sub_kb, withdraw_sub_kb, earn_kb, profile_kb, gifts_kb,
-    admin_kb, channels_kb, channels_delete_kb, admin_wd_kb,
-    priv_kb, broadcast_kb, settings_kb, promos_kb, user_view_kb, back_admin_kb,
+    main_menu, earn_kb, profile_kb, gifts_kb,
+    admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
+    promos_kb, user_view_kb, back_admin_kb, flyer_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -39,11 +40,6 @@ dp = Dispatcher()
 
 
 # ============ СОСТОЯНИЯ ============
-class AddChannel(StatesGroup):
-    waiting_link = State()
-    waiting_title = State()
-    waiting_id = State()
-
 class PromoCreate(StatesGroup):
     waiting_code = State()
     waiting_amount = State()
@@ -57,9 +53,6 @@ class SetValue(StatesGroup):
 
 class UserPromo(StatesGroup):
     waiting_code = State()
-
-class WithdrawFlow(StatesGroup):
-    waiting_sub = State()
 
 class PrivEdit(StatesGroup):
     waiting_text = State()
@@ -75,47 +68,147 @@ class GiveFlow(StatesGroup):
 class UserFind(StatesGroup):
     waiting_id = State()
 
+class FlyerEdit(StatesGroup):
+    waiting_key = State()
+    waiting_text = State()
+    waiting_btn_text = State()
+    waiting_rows = State()
 
-# ============ ПОДПИСКА ============
-async def check_sub(user_id, chat_id, bot_admin=True):
-    if not bot_admin:
+
+# ============ FLYER (через aiohttp) ============
+def flyer_enabled():
+    return get_setting("flyer_enabled") == "1"
+
+
+async def flyer_check(user_id):
+    """Возвращает True, если можно пустить юзера, False — если нет."""
+    if not flyer_enabled():
         return True
-    is_numeric = str(chat_id).lstrip("-").isdigit()
-    if not is_numeric:
+
+    key = get_setting("flyer_key")
+    if not key:
         return True
+
+    # Текст и кнопки
+    message_text = get_setting("flyer_text")
+    button_template = get_setting("flyer_button_text")
     try:
-        member = await bot.get_chat_member(int(chat_id), user_id)
-        if member.status in ("member", "administrator", "creator"):
-            return True
+        rows = int(get_setting("flyer_rows"))
     except Exception:
-        pass
-    if has_recent_join_request(user_id, chat_id):
-        return True
-    return False
+        rows = 2
+
+    payload = {
+        "key": key,
+        "user_id": user_id,
+        "message": {
+            "rows": rows,
+            "text": message_text,
+            "button_channel": button_template,
+        }
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.flyerhubs.com/check",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                data = await resp.json()
+                # skip = True → прошёл, False → не прошёл
+                return bool(data.get("skip", False))
+    except Exception as e:
+        print("Flyer error:", e)
+        return True  # при ошибке пропускаем
 
 
-async def check_all_subs(user_id, ch_type):
-    channels = get_channels(ch_type)
-    if not channels:
-        return True, []
+# ============ БЭКАП ============
+def export_users_to_json():
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-    all_green_ok = True
-    for ch in channels:
-        chat_id = ch[1]
-        bot_admin = ch[4] if len(ch) > 4 else 0
-        if not bot_admin:
-            continue
-        ok = await check_sub(user_id, chat_id, True)
-        if not ok:
-            all_green_ok = False
-        else:
-            track_channel_join(chat_id, user_id)
+    cur.execute("SELECT user_id, username, balance, last_bonus, referrer_id, registered_at FROM users")
+    users = [
+        {"user_id": r[0], "username": r[1], "balance": r[2],
+         "last_bonus": r[3], "referrer_id": r[4], "registered_at": r[5]}
+        for r in cur.fetchall()
+    ]
 
-    return all_green_ok, channels
+    cur.execute("SELECT user_id, referrer_id, created_at, status FROM referrals")
+    referrals = [
+        {"user_id": r[0], "referrer_id": r[1], "created_at": r[2], "status": r[3]}
+        for r in cur.fetchall()
+    ]
+
+    cur.execute("SELECT code, amount, max_uses, used, active FROM promos")
+    promos = [
+        {"code": r[0], "amount": r[1], "max_uses": r[2], "used": r[3], "active": r[4]}
+        for r in cur.fetchall()
+    ]
+
+    cur.execute("SELECT user_id, amount, gift, status, created_at FROM withdrawals")
+    withdrawals = [
+        {"user_id": r[0], "amount": r[1], "gift": r[2], "status": r[3], "created_at": r[4]}
+        for r in cur.fetchall()
+    ]
+
+    cur.execute("SELECT key, value FROM settings")
+    settings = {r[0]: r[1] for r in cur.fetchall()}
+
+    conn.close()
+    return {
+        "exported_at": datetime.now().isoformat(),
+        "users": users,
+        "referrals": referrals,
+        "promos": promos,
+        "withdrawals": withdrawals,
+        "settings": settings,
+    }
 
 
+def import_users_from_json(data):
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    count = 0
+    for u in data.get("users", []):
+        cur.execute("""
+            INSERT OR REPLACE INTO users
+            (user_id, username, balance, last_bonus, referrer_id, registered_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (u["user_id"], u.get("username"), u.get("balance", 0),
+              u.get("last_bonus"), u.get("referrer_id"), u.get("registered_at")))
+        count += 1
+
+    cur.execute("DELETE FROM referrals")
+    for r in data.get("referrals", []):
+        cur.execute("""
+            INSERT INTO referrals (user_id, referrer_id, created_at, status)
+            VALUES (?, ?, ?, ?)
+        """, (r["user_id"], r["referrer_id"], r.get("created_at"), r.get("status", "pending")))
+
+    for p in data.get("promos", []):
+        cur.execute("""
+            INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active)
+            VALUES (?, ?, ?, ?, ?)
+        """, (p["code"], p["amount"], p["max_uses"], p.get("used", 0), p.get("active", 1)))
+
+    cur.execute("DELETE FROM withdrawals")
+    for w in data.get("withdrawals", []):
+        cur.execute("""
+            INSERT INTO withdrawals (user_id, amount, gift, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (w["user_id"], w["amount"], w.get("gift"), w.get("status", "pending"), w.get("created_at")))
+
+    conn.commit()
+    conn.close()
+    return count
+
+
+# ============ ПРИВАТКА КНОПКИ ============
 def build_priv_buttons():
-    """Парсит priv_buttons и возвращает InlineKeyboardMarkup или None"""
     raw = get_setting("priv_buttons")
     if not raw:
         return None
@@ -139,15 +232,6 @@ def build_priv_buttons():
     if not rows:
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-# ============ ЗАЯВКА В КАНАЛ ============
-@dp.chat_join_request()
-async def on_join_request(request: ChatJoinRequest):
-    try:
-        save_join_request(request.from_user.id, request.chat.id)
-    except Exception:
-        pass
 
 
 # ============ СТАРТ ============
@@ -177,53 +261,29 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # Приватка (если включена)
+    # Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
-        priv_kb_obj = build_priv_buttons()
-        if priv_kb_obj:
-            await message.answer(priv_text, reply_markup=priv_kb_obj, parse_mode="HTML")
+        kb = build_priv_buttons()
+        if kb:
+            await message.answer(priv_text, reply_markup=kb, parse_mode="HTML")
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    # Приветствие + ОП
-    ok, channels = await check_all_subs(message.from_user.id, "start")
-    if channels and not ok:
-        name = message.from_user.first_name or "друг"
-        greeting = get_setting("greeting_text").format(name=name)
-        await message.answer(
-            greeting,
-            reply_markup=sub_kb(channels),
-            parse_mode="HTML"
-        )
-        return
+    # Flyer
+    if flyer_enabled():
+        passed = await flyer_check(message.from_user.id)
+        if not passed:
+            return
 
     welcome = get_setting("welcome_text")
     await message.answer(welcome, reply_markup=main_menu())
 
 
-@dp.callback_query(F.data == "check_sub")
-async def cb_check_sub(call: CallbackQuery):
-    ok, channels = await check_all_subs(call.from_user.id, "start")
-    if not ok:
-        await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
-        return
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    welcome = get_setting("welcome_text")
-    await call.message.answer(welcome, reply_markup=main_menu())
-
-
 # ============ ЗАРАБОТАТЬ ============
 @dp.message(F.text == "⭐ Заработать звёзды")
 async def earn(message: Message):
-    ok, channels = await check_all_subs(message.from_user.id, "start")
-    if channels and not ok:
-        name = message.from_user.first_name or "друг"
-        greeting = get_setting("greeting_text").format(name=name)
-        await message.answer(greeting, reply_markup=sub_kb(channels), parse_mode="HTML")
+    if not await flyer_check(message.from_user.id):
         return
 
     me = await bot.get_me()
@@ -257,11 +317,7 @@ async def earn(message: Message):
 # ============ ЛИДЕРЫ ============
 @dp.message(F.text == "🏆 Лидеры")
 async def leaders(message: Message):
-    ok, channels = await check_all_subs(message.from_user.id, "start")
-    if channels and not ok:
-        name = message.from_user.first_name or "друг"
-        greeting = get_setting("greeting_text").format(name=name)
-        await message.answer(greeting, reply_markup=sub_kb(channels), parse_mode="HTML")
+    if not await flyer_check(message.from_user.id):
         return
     rows = get_top(10)
     if not rows:
@@ -279,11 +335,7 @@ async def leaders(message: Message):
 # ============ ПРОФИЛЬ ============
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
-    ok, channels = await check_all_subs(message.from_user.id, "start")
-    if channels and not ok:
-        name = message.from_user.first_name or "друг"
-        greeting = get_setting("greeting_text").format(name=name)
-        await message.answer(greeting, reply_markup=sub_kb(channels), parse_mode="HTML")
+    if not await flyer_check(message.from_user.id):
         return
     u = get_user(message.from_user.id)
     if not u:
@@ -311,6 +363,8 @@ async def profile(message: Message):
 
 @dp.callback_query(F.data == "daily_bonus")
 async def cb_daily_bonus(call: CallbackQuery):
+    if not await flyer_check(call.from_user.id):
+        return
     if not can_take_bonus(call.from_user.id):
         await call.answer("⏳ Уже забирал сегодня. Возвращайся через 24 часа!", show_alert=True)
         return
@@ -364,6 +418,8 @@ async def user_promo_check(message: Message, state: FSMContext):
 # ============ ВЫВОД ============
 @dp.message(F.text == "💸 Вывести звёзды")
 async def withdraw(message: Message, state: FSMContext):
+    if not await flyer_check(message.from_user.id):
+        return
     await state.clear()
     await message.answer(
         "❣️ <b>Выбери подарок</b>",
@@ -382,67 +438,13 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
     balance = get_balance(call.from_user.id)
     if balance < price:
         need = price - balance
-        await call.answer(
-            f"❌ Не хватает {need} ⭐\n"
-            f"Нужно: {price} ⭐\n"
-            f"У тебя: {balance} ⭐",
-            show_alert=True
-        )
+        await call.answer(f"❌ Не хватает {need} ⭐\nНужно: {price} ⭐\nУ тебя: {balance} ⭐", show_alert=True)
         return
 
-    ok, channels = await check_all_subs(call.from_user.id, "withdraw")
-    if channels and not ok:
-        await state.update_data(gift_key=key)
-        await state.set_state(WithdrawFlow.waiting_sub)
-        await call.message.edit_text(
-            "✨ Чтобы вывести звёзды, пройди проверку ниже:\n\n"
-            "📢 <b>Подпишись на спонсоров:</b>\n\n"
-            "<blockquote>После подписки нажмите «✅ Подтвердить»</blockquote>\n\n"
-            "Жми на кнопки ниже 👇",
-            reply_markup=withdraw_sub_kb(channels),
-            parse_mode="HTML"
-        )
+    if not await flyer_check(call.from_user.id):
         return
 
     await create_order(call, key)
-
-
-@dp.callback_query(F.data == "wd_confirm_sub")
-async def wd_confirm_sub(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    key = data.get("gift_key")
-    if not key:
-        await call.answer("Сначала выбери подарок", show_alert=True)
-        return
-
-    ok, channels = await check_all_subs(call.from_user.id, "withdraw")
-    if not ok:
-        await call.answer("❌ Ты ещё не подписался на все каналы", show_alert=True)
-        return
-
-    await state.clear()
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await create_order(call, key)
-
-
-@dp.callback_query(F.data == "wd_cancel_sub")
-async def wd_cancel_sub(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    try:
-        await call.message.edit_text(
-            "❣️ <b>Выбери подарок</b>",
-            reply_markup=gifts_kb(),
-            parse_mode="HTML"
-        )
-    except Exception:
-        await call.message.answer(
-            "❣️ <b>Выбери подарок</b>",
-            reply_markup=gifts_kb(),
-            parse_mode="HTML"
-        )
 
 
 async def create_order(call: CallbackQuery, key):
@@ -463,10 +465,7 @@ async def create_order(call: CallbackQuery, key):
     try:
         await call.message.edit_text(text, parse_mode="HTML")
     except Exception:
-        try:
-            await call.message.answer(text, parse_mode="HTML")
-        except Exception:
-            pass
+        await call.message.answer(text, parse_mode="HTML")
     try:
         await bot.send_message(
             ADMIN_ID,
@@ -516,255 +515,202 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# --- КАНАЛЫ ---
-@dp.callback_query(F.data.startswith("ch_list:"))
-async def ch_list(call: CallbackQuery):
+# --- FLYER ---
+def flyer_menu_text():
+    enabled = flyer_enabled()
+    key = get_setting("flyer_key")
+    return (
+        f"🎯 <b>Flyer</b>\n\n"
+        f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
+        f"🔑 Ключ: <code>{key[:25]}...</code>\n\n"
+        f"📝 <b>Текст сообщения:</b>\n<i>{get_setting('flyer_text')}</i>\n\n"
+        f"🔤 <b>Текст кнопок:</b> <code>{get_setting('flyer_button_text')}</code>\n"
+        f"📏 <b>Кнопок в ряд:</b> {get_setting('flyer_rows')}"
+    )
+
+
+@dp.callback_query(F.data == "flyer_menu")
+async def flyer_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    ch_type = call.data.split(":")[1]
-    title = "📢 Каналы на входе" if ch_type == "start" else "💰 Каналы на вывод"
-    rows = get_channels(ch_type)
-    if rows:
-        lines = []
-        for ch in rows:
-            t = ch[2]
-            bot_admin = ch[4] if len(ch) > 4 else 0
-            icon = "🟢" if bot_admin else "🟡"
-            lines.append(f"{icon} {t}")
-        lst = "\n".join(lines)
-    else:
-        lst = "<i>пусто</i>"
     await call.message.edit_text(
-        f"<b>{title}</b>\n\n"
-        f"🟢 — проверка работает\n"
-        f"🟡 — без проверки\n\n"
-        f"Список:\n{lst}",
-        reply_markup=channels_kb(ch_type),
+        flyer_menu_text(),
+        reply_markup=flyer_kb(flyer_enabled()),
         parse_mode="HTML"
     )
 
 
-@dp.callback_query(F.data.startswith("ch_view:"))
-async def ch_view(call: CallbackQuery):
+@dp.callback_query(F.data == "flyer_toggle")
+async def flyer_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    cid = int(call.data.split(":")[1])
-    ch = get_channel_by_id(cid)
-    if not ch:
-        await call.answer("Канал не найден")
-        return
-    _, chat_id, title, link, ch_type, bot_admin = ch
-    joins = get_channel_joins(chat_id)
-    status = "🟢 бот админ" if bot_admin else "🟡 без бота-админа"
+    current = get_setting("flyer_enabled") == "1"
+    set_setting("flyer_enabled", "0" if current else "1")
+    await call.answer("✅ Изменено")
     await call.message.edit_text(
-        f"📢 <b>{title}</b>\n\n"
-        f"🔗 Ссылка: {link or '—'}\n"
-        f"👥 Зашло по боту: <b>{joins}</b>\n"
-        f"🆔 <code>{chat_id}</code>\n"
-        f"📍 Тип: {ch_type}\n"
-        f"🤖 Статус: {status}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"ch_list:{ch_type}")]
-        ]),
+        flyer_menu_text(),
+        reply_markup=flyer_kb(not current),
         parse_mode="HTML"
     )
 
 
-@dp.callback_query(F.data.startswith("ch_add:"))
-async def ch_add(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "flyer_edit_key")
+async def flyer_edit_key(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    ch_type = call.data.split(":")[1]
-    await call.message.answer(
-        "📢 <b>Как добавить ОП:</b>\n\n"
-        "1️⃣ Публичный канал — пришли ссылку:\n"
-        "<code>https://t.me/username</code>\n\n"
-        "2️⃣ Закрытый канал — пришли ссылку-приглашение:\n"
-        "<code>https://t.me/+xxxxx</code>\n\n"
-        "3️⃣ Пересланное сообщение из канала\n\n"
-        "💡 Для закрытого канала после ссылки пришлёшь название и ID "
-        "(вида <code>-100...</code>).\n\n"
-        "⚠️ Проверка работает только если бот админ в канале.",
-        parse_mode="HTML"
-    )
-    await state.update_data(ch_type=ch_type)
-    await state.set_state(AddChannel.waiting_link)
+    await call.message.answer("🔑 Пришли новый ключ Flyer (вида FL-...):")
+    await state.set_state(FlyerEdit.waiting_key)
 
 
-@dp.message(AddChannel.waiting_link)
-async def add_ch_link(message: Message, state: FSMContext):
+@dp.message(FlyerEdit.waiting_key)
+async def flyer_save_key(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    data = await state.get_data()
-    ch_type = data.get("ch_type", "start")
-
-    if message.forward_from_chat:
-        fwd = message.forward_from_chat
-        chat_id = str(fwd.id)
-        title = fwd.title or f"Канал {chat_id}"
-        link = f"https://t.me/{fwd.username}" if fwd.username else ""
-
-        bot_admin = 0
-        try:
-            member = await bot.get_chat_member(fwd.id, bot.id)
-            if member.status in ("administrator", "creator"):
-                bot_admin = 1
-        except Exception:
-            pass
-
-        add_channel(chat_id, title, link, ch_type, bot_admin)
-        status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
-        await message.answer(
-            f"✅ Канал «{title}» добавлен\n{status}",
-            reply_markup=back_admin_kb()
-        )
-        await state.clear()
+    key = message.text.strip()
+    if not key.startswith("FL-"):
+        await message.answer("⚠️ Ключ должен начинаться с FL-.")
         return
-
-    if not message.text:
-        await message.answer("⚠️ Пришли ссылку или перешли сообщение.")
-        return
-
-    text = message.text.strip()
-
-    if "t.me/+" in text or "t.me/joinchat/" in text:
-        await state.update_data(ch_type=ch_type, invite_link=text)
-        await message.answer("✏️ Введи название канала (как показывать юзерам):")
-        await state.set_state(AddChannel.waiting_title)
-        return
-
-    if "t.me/" in text:
-        part = text.split("t.me/")[-1].split("?")[0].strip("/")
-        if part and not part.startswith("+"):
-            text = f"@{part}"
-
-    if text.startswith("@"):
-        username = text
-        link = f"https://t.me/{username.lstrip('@')}"
-        title = username
-        chat_id = username
-        bot_admin = 0
-        try:
-            chat = await bot.get_chat(username)
-            title = chat.title or username
-            chat_id = str(chat.id)
-            link = chat.invite_link or (f"https://t.me/{chat.username}" if chat.username else link)
-            try:
-                member = await bot.get_chat_member(chat.id, bot.id)
-                if member.status in ("administrator", "creator"):
-                    bot_admin = 1
-            except Exception:
-                bot_admin = 0
-        except Exception:
-            pass
-        add_channel(chat_id, title, link, ch_type, bot_admin)
-        status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
-        await message.answer(
-            f"✅ Канал «{title}» добавлен\n{status}",
-            reply_markup=back_admin_kb()
-        )
-        await state.clear()
-        return
-
-    await message.answer("⚠️ Не понял. Пришли ссылку https://t.me/...")
-
-
-@dp.message(AddChannel.waiting_title)
-async def add_ch_title(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    title = (message.text or "").strip()[:50] or "Канал"
-    await state.update_data(channel_title=title)
-    await message.answer(
-        "🆔 Пришли ID канала (вида <code>-1001234567890</code>)\n\n"
-        "Если нет ID — напиши <code>-</code>",
-        parse_mode="HTML"
-    )
-    await state.set_state(AddChannel.waiting_id)
-
-
-@dp.message(AddChannel.waiting_id)
-async def add_ch_id(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    data = await state.get_data()
-    ch_type = data.get("ch_type", "start")
-    link = data.get("invite_link", "")
-    title = data.get("channel_title", "Канал")
-    text = (message.text or "").strip()
-
-    if text == "-":
-        add_channel(link or title, title, link, ch_type, 0)
-        await message.answer(
-            f"✅ Канал «{title}» добавлен\n🟡 без проверки",
-            reply_markup=back_admin_kb()
-        )
-        await state.clear()
-        return
-
-    chat_id = text
-    bot_admin = 0
-    if text.lstrip("-").isdigit():
-        try:
-            member = await bot.get_chat_member(int(text), bot.id)
-            if member.status in ("administrator", "creator"):
-                bot_admin = 1
-        except Exception:
-            bot_admin = 0
-
-    add_channel(chat_id, title, link, ch_type, bot_admin)
-    status = "🟢 проверка работает" if bot_admin else "🟡 без проверки"
-    await message.answer(
-        f"✅ Канал «{title}» добавлен\n{status}",
-        reply_markup=back_admin_kb()
-    )
+    set_setting("flyer_key", key)
     await state.clear()
+    await message.answer("✅ Ключ сохранён", reply_markup=back_admin_kb())
 
 
-@dp.callback_query(F.data.startswith("ch_del_list:"))
-async def ch_del_list(call: CallbackQuery):
+@dp.callback_query(F.data == "flyer_edit_text")
+async def flyer_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    ch_type = call.data.split(":")[1]
-    await call.message.edit_text(
-        "🗑 Выбери канал для удаления:",
-        reply_markup=channels_delete_kb(ch_type)
+    await call.message.answer(
+        "✏️ Пришли новый текст сообщения Flyer.\n"
+        "Можно HTML: <code>&lt;b&gt;жирный&lt;/b&gt;</code>, эмодзи.",
+        parse_mode="HTML"
     )
+    await state.set_state(FlyerEdit.waiting_text)
 
 
-@dp.callback_query(F.data.startswith("ch_del:"))
-async def ch_del(call: CallbackQuery):
+@dp.message(FlyerEdit.waiting_text)
+async def flyer_save_text(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    set_setting("flyer_text", message.text)
+    await state.clear()
+    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "flyer_edit_btn_text")
+async def flyer_edit_btn_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    parts = call.data.split(":")
-    cid = int(parts[1])
-    ch_type = parts[2]
-    delete_channel(cid)
-    await call.answer("✅ Удалено")
-    rows = get_channels(ch_type)
-    if rows:
-        lst = "\n".join([f"• {ch[2]}" for ch in rows])
-    else:
-        lst = "<i>пусто</i>"
-    title = "📢 Каналы на входе" if ch_type == "start" else "💰 Каналы на вывод"
+    await call.message.answer(
+        "🔤 Пришли новый текст для кнопок.\n\n"
+        "Используй <code>{n}</code> — куда подставится номер.\n"
+        "Пример: <code>📢 Подпишись {n}</code>",
+        parse_mode="HTML"
+    )
+    await state.set_state(FlyerEdit.waiting_btn_text)
+
+
+@dp.message(FlyerEdit.waiting_btn_text)
+async def flyer_save_btn_text(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text.strip()
+    if "{n}" not in text:
+        await message.answer("⚠️ Добавь {n} в текст кнопки (куда ставить номер).")
+        return
+    set_setting("flyer_button_text", text)
+    await state.clear()
+    await message.answer("✅ Текст кнопок сохранён", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "flyer_edit_rows")
+async def flyer_edit_rows(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("📏 Сколько кнопок в ряд? Напиши <b>1</b> или <b>2</b>:", parse_mode="HTML")
+    await state.set_state(FlyerEdit.waiting_rows)
+
+
+@dp.message(FlyerEdit.waiting_rows)
+async def flyer_save_rows(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text.strip()
+    if text not in ("1", "2"):
+        await message.answer("⚠️ Только 1 или 2.")
+        return
+    set_setting("flyer_rows", text)
+    await state.clear()
+    await message.answer(f"✅ Сохранено: {text} в ряд", reply_markup=back_admin_kb())
+
+
+# --- БЭКАП ---
+@dp.callback_query(F.data == "backup_help")
+async def backup_help(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
     await call.message.edit_text(
-        f"<b>{title}</b>\n\nСписок:\n{lst}",
-        reply_markup=channels_kb(ch_type),
+        "📦 <b>Бэкап</b>\n\n"
+        "📤 <b>Выгрузка:</b> напиши команду <code>/backup</code> — бот пришлёт JSON-файл.\n\n"
+        "📥 <b>Загрузка:</b> просто <b>отправь боту JSON-файл</b> — он восстановит всех юзеров, рефералов, промокоды, заявки и настройки.",
+        reply_markup=back_admin_kb(),
         parse_mode="HTML"
     )
 
 
-@dp.callback_query(F.data.startswith("ch_clear:"))
-async def ch_clear(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+@dp.message(Command("backup"))
+async def backup_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
-    ch_type = call.data.split(":")[1]
-    clear_channels(ch_type)
-    await call.answer("🧹 Очищено")
-    await call.message.edit_text(
-        "🧹 Все каналы удалены",
-        reply_markup=back_admin_kb()
-    )
+    await message.answer("📦 Собираю бэкап...")
+    data = export_users_to_json()
+    fname = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(fname, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        file = FSInputFile(fname)
+        await message.answer_document(
+            file,
+            caption=(
+                f"📦 <b>Бэкап</b>\n\n"
+                f"👥 Юзеров: <b>{len(data['users'])}</b>\n"
+                f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
+                f"🎟 Промокодов: <b>{len(data['promos'])}</b>\n"
+                f"💸 Заявок: <b>{len(data['withdrawals'])}</b>"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    try:
+        os.remove(fname)
+    except Exception:
+        pass
+
+
+@dp.message(F.document)
+async def restore_doc(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    doc = message.document
+    if not doc.file_name.endswith(".json"):
+        return
+    try:
+        file = await bot.get_file(doc.file_id)
+        fname = f"restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        await bot.download_file(file.file_path, fname)
+        with open(fname, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        count = import_users_from_json(data)
+        try:
+            os.remove(fname)
+        except Exception:
+            pass
+        await message.answer(
+            f"✅ <b>Восстановление готово!</b>\n\n👥 Юзеров: <b>{count}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # --- ЗАЯВКИ ---
@@ -782,13 +728,8 @@ async def wd_list(call: CallbackQuery):
         u = get_user(user_id)
         uname = f"@{u[1]}" if u and u[1] else "без username"
         await call.message.answer(
-            f"💸 <b>Заявка #{wid}</b>\n"
-            f"👤 {uname}\n"
-            f"🆔 <code>{user_id}</code>\n"
-            f"🎁 {name}\n"
-            f"💰 {amount} ⭐",
-            reply_markup=admin_wd_kb(wid),
-            parse_mode="HTML"
+            f"💸 <b>Заявка #{wid}</b>\n👤 {uname}\n🆔 <code>{user_id}</code>\n🎁 {name}\n💰 {amount} ⭐",
+            reply_markup=admin_wd_kb(wid), parse_mode="HTML"
         )
 
 
@@ -799,22 +740,14 @@ async def wd_ok(call: CallbackQuery):
     wid = int(call.data.split(":")[1])
     row = get_withdrawal(wid)
     if not row:
-        await call.answer("Заявка не найдена")
-        return
+        await call.answer("Не найдена"); return
     _, user_id, amount, gift_key, status = row
     if status != "pending":
-        await call.answer("Уже обработана")
-        return
+        await call.answer("Уже обработана"); return
     set_withdrawal_status(wid, "completed")
     name = GIFTS.get(gift_key, ("подарок", 0))[0]
     try:
-        await bot.send_message(
-            user_id,
-            f"✅ <b>Заявка #{wid} одобрена!</b>\n\n"
-            f"🎁 {name} отправлен тебе.\n"
-            f"Проверь Telegram!",
-            parse_mode="HTML"
-        )
+        await bot.send_message(user_id, f"✅ <b>Заявка #{wid} одобрена!</b>\n\n🎁 {name} отправлен тебе.", parse_mode="HTML")
     except Exception:
         pass
     try:
@@ -830,19 +763,14 @@ async def wd_no(call: CallbackQuery):
     wid = int(call.data.split(":")[1])
     row = get_withdrawal(wid)
     if not row:
-        await call.answer("Заявка не найдена")
-        return
+        await call.answer("Не найдена"); return
     _, user_id, amount, gift_key, status = row
     if status != "pending":
-        await call.answer("Уже обработана")
-        return
+        await call.answer("Уже обработана"); return
     set_withdrawal_status(wid, "rejected")
     add_balance(user_id, amount)
     try:
-        await bot.send_message(
-            user_id,
-            f"❌ Заявка #{wid} отклонена.\n{amount} ⭐ возвращены на баланс."
-        )
+        await bot.send_message(user_id, f"❌ Заявка #{wid} отклонена.\n{amount} ⭐ возвращены на баланс.")
     except Exception:
         pass
     try:
@@ -857,9 +785,8 @@ async def wd_history(call: CallbackQuery):
         return
     rows = get_withdrawal_history(50)
     if not rows:
-        await call.message.edit_text("📭 История пуста", reply_markup=back_admin_kb())
-        return
-    text = "📜 <b>История (последние 50)</b>\n\n"
+        await call.message.edit_text("📭 История пуста", reply_markup=back_admin_kb()); return
+    text = "📜 <b>История (50)</b>\n\n"
     for wid, uid, amount, gift_key, status, created in rows:
         icon = "✅" if status == "completed" else "❌"
         name = GIFTS.get(gift_key, ("—", 0))[0]
@@ -889,11 +816,7 @@ async def priv_menu(call: CallbackQuery):
 async def priv_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer(
-        "✏️ Пришли новый текст приватки:\n\n"
-        "Можно использовать HTML: <code>&lt;b&gt;жирный&lt;/b&gt;</code>, "
-        "<code>&lt;i&gt;курсив&lt;/i&gt;</code>, эмодзи."
-    )
+    await call.message.answer("✏️ Пришли новый текст приватки:")
     await state.set_state(PrivEdit.waiting_text)
 
 
@@ -904,7 +827,7 @@ async def priv_save_text(message: Message, state: FSMContext):
     set_setting("priv_text", message.text)
     set_setting("priv_enabled", "1")
     await state.clear()
-    await message.answer("✅ Текст приватки сохранён", reply_markup=back_admin_kb())
+    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data == "priv_edit_buttons")
@@ -912,16 +835,9 @@ async def priv_edit_buttons(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer(
-        "🔗 Пришли кнопки в таком формате:\n\n"
-        "<b>Столбиком (по 1 в ряд):</b>\n"
-        "<code>Кнопка 1 - https://t.me/xxx\n"
-        "Кнопка 2 - https://t.me/yyy</code>\n\n"
-        "<b>В ряд (по 2+):</b>\n"
-        "<code>Кнопка 1 - https://t.me/xxx & Кнопка 2 - https://t.me/yyy</code>\n\n"
-        "<b>Смешанно:</b>\n"
-        "<code>Я парень - https://t.me/bot1 & Я девушка - https://t.me/bot2\n"
-        "Другое - https://t.me/bot3</code>\n\n"
-        "Каждая строка — новый ряд. <code>&amp;</code> разделяет кнопки внутри ряда.",
+        "🔗 Пришли кнопки:\n\n"
+        "<b>Столбиком:</b>\n<code>Кнопка - https://t.me/xxx\nКнопка 2 - https://t.me/yyy</code>\n\n"
+        "<b>В ряд:</b>\n<code>Кнопка 1 - https://t.me/x & Кнопка 2 - https://t.me/y</code>",
         parse_mode="HTML"
     )
     await state.set_state(PrivEdit.waiting_buttons)
@@ -932,7 +848,6 @@ async def priv_save_buttons(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     text = message.text.strip()
-    # Проверка формата
     ok = False
     for line in text.split("\n"):
         for pair in line.split("&"):
@@ -942,11 +857,7 @@ async def priv_save_buttons(message: Message, state: FSMContext):
                 if len(parts) == 2 and parts[0].strip() and parts[1].strip().startswith("http"):
                     ok = True
     if not ok:
-        await message.answer(
-            "⚠️ Неверный формат. Пример:\n"
-            "<code>Я парень - https://t.me/bot1 & Я девушка - https://t.me/bot2</code>",
-            parse_mode="HTML"
-        )
+        await message.answer("⚠️ Неверный формат.")
         return
     set_setting("priv_buttons", text)
     set_setting("priv_enabled", "1")
@@ -959,11 +870,8 @@ async def priv_delete(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     set_setting("priv_enabled", "0")
-    await call.answer("🗑 Приватка удалена")
-    await call.message.edit_text(
-        "🗑 Приватка удалена. При /start бот сразу показывает ОП.",
-        reply_markup=back_admin_kb()
-    )
+    await call.answer("🗑 Удалено")
+    await call.message.edit_text("🗑 Приватка удалена", reply_markup=back_admin_kb())
 
 
 # --- РАССЫЛКА ---
@@ -983,10 +891,8 @@ async def broadcast_preview(message: Message, state: FSMContext):
     users = get_all_user_ids()
     await message.answer(
         f"📢 <b>Предпросмотр:</b>\n\n{message.text}\n\n"
-        f"<i>Получателей: {len(users)}</i>\n\n"
-        f"Отправить?",
-        reply_markup=broadcast_kb(),
-        parse_mode="HTML"
+        f"<i>Получателей: {len(users)}</i>",
+        reply_markup=broadcast_kb(), parse_mode="HTML"
     )
 
 
@@ -997,12 +903,10 @@ async def broadcast_confirm(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     text = data.get("bc_text")
     if not text:
-        await call.answer("Текст потерян, попробуй заново")
-        return
+        await call.answer("Текст потерян"); return
     await state.clear()
     users = get_all_user_ids()
-    await call.message.edit_text(f"📢 Рассылка началась... (0/{len(users)})")
-
+    await call.message.edit_text(f"📢 Начинаю... (0/{len(users)})")
     sent = 0
     for i, uid in enumerate(users, 1):
         try:
@@ -1016,9 +920,8 @@ async def broadcast_confirm(call: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
         await asyncio.sleep(0.05)
-
     await call.message.edit_text(
-        f"✅ Рассылка завершена!\n\nОтправлено: {sent}/{len(users)}",
+        f"✅ Готово!\n\nОтправлено: {sent}/{len(users)}",
         reply_markup=back_admin_kb()
     )
 
@@ -1038,19 +941,15 @@ async def give_get_id(message: Message, state: FSMContext):
         return
     text = message.text.strip()
     if not text.lstrip("-").isdigit():
-        await message.answer("⚠️ ID должен быть числом. Попробуй ещё.")
+        await message.answer("⚠️ ID — число.")
         return
     uid = int(text)
     u = get_user(uid)
     if not u:
-        await message.answer("⚠️ Юзер с таким ID не найден.")
+        await message.answer("⚠️ Не найден.")
         return
     await state.update_data(give_uid=uid)
-    await message.answer(
-        f"👤 @{u[1] or 'без username'} — баланс: {u[2]} ⭐\n\n"
-        f"Пришли сумму для начисления. Можно отрицательное: <code>-50</code>",
-        parse_mode="HTML"
-    )
+    await message.answer(f"👤 @{u[1] or '—'} — баланс: {u[2]} ⭐\n\nПришли сумму (+ или −):")
     await state.set_state(GiveFlow.waiting_amount)
 
 
@@ -1066,18 +965,13 @@ async def give_amount(message: Message, state: FSMContext):
     data = await state.get_data()
     uid = data.get("give_uid")
     if not uid:
-        await state.clear()
-        await message.answer("⚠️ Что-то пошло не так.")
-        return
+        await state.clear(); return
     add_balance(uid, amount)
     new_balance = get_balance(uid)
     await state.clear()
     await message.answer(
-        f"✅ Начислено: {amount:+d} ⭐\n"
-        f"🆔 ID: <code>{uid}</code>\n"
-        f"💰 Новый баланс: <b>{new_balance}</b> ⭐",
-        reply_markup=back_admin_kb(),
-        parse_mode="HTML"
+        f"✅ {amount:+d} ⭐\n🆔 <code>{uid}</code>\n💰 Баланс: <b>{new_balance}</b> ⭐",
+        reply_markup=back_admin_kb(), parse_mode="HTML"
     )
 
 
@@ -1096,12 +990,12 @@ async def user_show(message: Message, state: FSMContext):
         return
     text = message.text.strip()
     if not text.lstrip("-").isdigit():
-        await message.answer("⚠️ ID должен быть числом.")
+        await message.answer("⚠️ ID — число.")
         return
     uid = int(text)
     u = get_user(uid)
     if not u:
-        await message.answer("⚠️ Юзер не найден.")
+        await message.answer("⚠️ Не найден.")
         return
     balance = u[2]
     refs = get_confirmed_refs_count(uid)
@@ -1110,14 +1004,13 @@ async def user_show(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"👤 <b>Юзер</b>\n\n"
-        f"🧑 @{u[1] or 'без username'}\n"
+        f"🧑 @{u[1] or '—'}\n"
         f"🆔 <code>{uid}</code>\n"
         f"⭐ Баланс: <b>{balance}</b>\n"
         f"👥 Друзей: <b>{refs}</b>\n"
         f"⏳ Ожидают: <b>{pending}</b>\n"
         f"📅 Регистрация: {reg}",
-        reply_markup=user_view_kb(uid),
-        parse_mode="HTML"
+        reply_markup=user_view_kb(uid), parse_mode="HTML"
     )
 
 
@@ -1128,9 +1021,8 @@ async def user_refs(call: CallbackQuery):
     uid = int(call.data.split(":")[1])
     rows = get_user_referrals(uid, 100)
     if not rows:
-        await call.answer("Список пуст", show_alert=True)
-        return
-    text = f"👥 <b>Рефералы юзера <code>{uid}</code></b>\n\n"
+        await call.answer("Пусто"); return
+    text = f"👥 <b>Рефералы <code>{uid}</code></b>\n\n"
     icons = {"confirmed": "✅", "pending": "⏳", "expired": "❌"}
     for r_uid, r_name, r_date, r_status in rows:
         icon = icons.get(r_status, "•")
@@ -1154,7 +1046,7 @@ async def promos(call: CallbackQuery):
 async def promo_create(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🎟 Введи название промокода (например, SAVIK1):")
+    await call.message.answer("🎟 Название промокода:")
     await state.set_state(PromoCreate.waiting_code)
 
 
@@ -1164,10 +1056,10 @@ async def promo_code_step(message: Message, state: FSMContext):
         return
     code = message.text.strip().upper()
     if not code.isalnum() or len(code) < 3:
-        await message.answer("⚠️ Только буквы/цифры, минимум 3 символа.")
+        await message.answer("⚠️ Только буквы/цифры, минимум 3.")
         return
     await state.update_data(code=code)
-    await message.answer(f"Код: <b>{code}</b>\n\nСколько звёзд давать?", parse_mode="HTML")
+    await message.answer(f"Код: <b>{code}</b>\n\nСколько звёзд?", parse_mode="HTML")
     await state.set_state(PromoCreate.waiting_amount)
 
 
@@ -1181,7 +1073,7 @@ async def promo_amount_step(message: Message, state: FSMContext):
         await message.answer("⚠️ Нужно число.")
         return
     await state.update_data(amount=amount)
-    await message.answer(f"Звёзд: <b>{amount}</b>\n\nСколько всего активаций?", parse_mode="HTML")
+    await message.answer(f"Звёзд: <b>{amount}</b>\n\nСколько активаций?", parse_mode="HTML")
     await state.set_state(PromoCreate.waiting_uses)
 
 
@@ -1198,10 +1090,7 @@ async def promo_uses_step(message: Message, state: FSMContext):
     create_promo(data["code"], data["amount"], uses)
     await state.clear()
     await message.answer(
-        f"✅ <b>Промокод создан!</b>\n\n"
-        f"🎟 Код: <code>{data['code']}</code>\n"
-        f"💰 Награда: {data['amount']} ⭐\n"
-        f"👥 Активаций: {uses}",
+        f"✅ Промокод <code>{data['code']}</code> создан ({data['amount']} ⭐, {uses} активаций)",
         parse_mode="HTML"
     )
 
@@ -1212,8 +1101,7 @@ async def promo_list_cb(call: CallbackQuery):
         return
     rows = list_promos()
     if not rows:
-        await call.answer("Промокодов нет", show_alert=True)
-        return
+        await call.answer("Пусто"); return
     text = "📜 <b>Промокоды</b>\n\n"
     for code, amount, mx, used, active in rows:
         status = "🟢" if active and used < mx else "🔴"
@@ -1225,7 +1113,7 @@ async def promo_list_cb(call: CallbackQuery):
 async def promo_delete_cb(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🗑 Введи код для удаления:")
+    await call.message.answer("🗑 Код для удаления:")
     await state.set_state(PromoDelete.waiting_code)
 
 
@@ -1235,11 +1123,11 @@ async def promo_delete_step(message: Message, state: FSMContext):
         return
     code = message.text.strip().upper()
     if not get_promo(code):
-        await message.answer("⚠️ Такого промокода нет.")
+        await message.answer("⚠️ Нет такого.")
         return
     delete_promo(code)
     await state.clear()
-    await message.answer(f"🗑 Промокод <code>{code}</code> удалён.", parse_mode="HTML")
+    await message.answer(f"🗑 Удалён <code>{code}</code>", parse_mode="HTML")
 
 
 # --- СТАТИСТИКА ---
@@ -1248,23 +1136,14 @@ async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     s = get_stats()
-    channels_start = get_channels("start")
-    channels_wd = get_channels("withdraw")
-    ch_lines = ""
-    for ch in channels_start[:5]:
-        ch_lines += f"  • {ch[2]} — {get_channel_joins(ch[1])} 👥\n"
     await call.message.edit_text(
         f"📊 <b>СТАТИСТИКА</b>\n\n"
         f"👥 Всего юзеров: <b>{s['total']}</b>\n"
         f"📅 Сегодня: <b>{s['today']}</b>\n\n"
         f"📋 Заявок в ожидании: <b>{s['pending']}</b>\n"
         f"✅ Выполнено: <b>{s['done']}</b>\n"
-        f"💫 Выдано звёзд: <b>{s['total_stars']}</b>\n\n"
-        f"📢 Каналов на входе: <b>{len(channels_start)}</b>\n"
-        f"💰 Каналов на вывод: <b>{len(channels_wd)}</b>\n\n"
-        f"<b>Топ каналов:</b>\n{ch_lines or '  —'}",
-        reply_markup=back_admin_kb(),
-        parse_mode="HTML"
+        f"💫 Выдано звёзд: <b>{s['total_stars']}</b>",
+        reply_markup=back_admin_kb(), parse_mode="HTML"
     )
 
 
@@ -1278,10 +1157,8 @@ async def settings(call: CallbackQuery):
         f"👥 Бонус за реферала: <b>{get_setting('ref_bonus')}</b> ⭐\n"
         f"🎁 Ежедневный бонус: <b>{get_setting('daily_bonus')}</b> ⭐\n"
         f"💸 Минимум вывода: <b>{get_setting('min_withdraw')}</b> ⭐\n"
-        f"✏️ Текст под меню: <i>{get_setting('welcome_text')}</i>\n"
-        f"💚 Текст с ОП: <i>{get_setting('greeting_text')[:60]}...</i>",
-        reply_markup=settings_kb(),
-        parse_mode="HTML"
+        f"✏️ Текст под меню: <i>{get_setting('welcome_text')}</i>",
+        reply_markup=settings_kb(), parse_mode="HTML"
     )
 
 
@@ -1291,18 +1168,13 @@ async def set_value_ask(call: CallbackQuery, state: FSMContext):
         return
     key = call.data.split(":")[1]
     prompts = {
-        "ref_bonus": "👥 Введи новый бонус за реферала (число):",
-        "daily_bonus": "🎁 Введи новый ежедневный бонус (число):",
-        "min_withdraw": "💸 Введи новый минимум для вывода (число):",
-        "welcome_text": "✏️ Введи новый текст под меню (можно с эмодзи):",
-        "greeting_text": (
-            "💚 Введи новый текст с ОП.\n\n"
-            "Можно использовать <code>{name}</code> — подставится имя юзера.\n"
-            "HTML: <code>&lt;b&gt;жирный&lt;/b&gt;</code>, <code>&lt;i&gt;курсив&lt;/i&gt;</code>."
-        ),
+        "ref_bonus": "👥 Бонус за реферала (число):",
+        "daily_bonus": "🎁 Ежедневный бонус (число):",
+        "min_withdraw": "💸 Минимум вывода (число):",
+        "welcome_text": "✏️ Текст под меню:",
     }
     await state.update_data(set_key=key)
-    await call.message.answer(prompts[key], parse_mode="HTML")
+    await call.message.answer(prompts[key])
     await state.set_state(SetValue.waiting_value)
 
 
@@ -1317,14 +1189,14 @@ async def set_value_save(message: Message, state: FSMContext):
         try:
             int(value)
         except Exception:
-            await message.answer("⚠️ Нужно число. Попробуй ещё раз.")
+            await message.answer("⚠️ Нужно число.")
             return
     set_setting(key, value)
     await state.clear()
-    await message.answer(f"✅ Сохранено: {key} = {value[:80]}", reply_markup=back_admin_kb())
+    await message.answer(f"✅ Сохранено: {key}", reply_markup=back_admin_kb())
 
 
-# ============ ФОНОВЫЕ ЗАДАЧИ ============
+# ============ ФОН ============
 async def referral_watcher():
     while True:
         try:
@@ -1334,8 +1206,7 @@ async def referral_watcher():
                 try:
                     await bot.send_message(
                         referrer_id,
-                        f"⏳ {uname} зашёл по твоей ссылке, но не забрал бонус.\n"
-                        f"Напомни ему зайти в профиль и нажать «🎁 Ежедневный бонус»."
+                        f"⏳ {uname} зашёл по твоей ссылке, но не забрал бонус."
                     )
                 except Exception:
                     pass
@@ -1351,14 +1222,11 @@ async def referral_watcher():
                     try:
                         await bot.send_message(
                             referrer_id,
-                            f"⏰ Прошло {REFERRAL_DAYS} дней. "
-                            f"Друзья не забрали бонус, рефералы не засчитаны:\n{lines}",
+                            f"⏰ Прошло {REFERRAL_DAYS} дней. Друзья не забрали бонус:\n{lines}",
                             parse_mode="HTML"
                         )
                     except Exception:
                         pass
-
-            cleanup_join_requests()
         except Exception as e:
             print("Watcher error:", e)
         await asyncio.sleep(60)
