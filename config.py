@@ -11,7 +11,7 @@ BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
 BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
 
 # ============ FLYER (задания) ============
-FLYER_KEY = "FL-EzEoBC-PzGpeD-seLIsD-kHEwfN"
+FLYER_KEY = "FL-PmVYtX-SLYMIL-PuzElI-bXhEYl"
 FLYER_URL = "https://api.flyerhubs.com/check"
 
 # ============ РЕФЕРАЛЫ ============
