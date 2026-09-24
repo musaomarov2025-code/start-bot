@@ -75,13 +75,12 @@ class FlyerEdit(StatesGroup):
     waiting_rows = State()
 
 
-# ============ FLYER (через aiohttp) ============
+# ============ FLYER ============
 def flyer_enabled():
     return get_setting("flyer_enabled") == "1"
 
 
 async def flyer_check(user_id):
-    """Возвращает True, если можно пустить юзера, False — если нет."""
     if not flyer_enabled():
         return True
 
@@ -89,7 +88,6 @@ async def flyer_check(user_id):
     if not key:
         return True
 
-    # Текст и кнопки
     message_text = get_setting("flyer_text")
     button_template = get_setting("flyer_button_text")
     try:
@@ -115,11 +113,10 @@ async def flyer_check(user_id):
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 data = await resp.json()
-                # skip = True → прошёл, False → не прошёл
                 return bool(data.get("skip", False))
     except Exception as e:
         print("Flyer error:", e)
-        return True  # при ошибке пропускаем
+        return True
 
 
 # ============ БЭКАП ============
@@ -207,7 +204,7 @@ def import_users_from_json(data):
     return count
 
 
-# ============ ПРИВАТКА КНОПКИ ============
+# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -261,7 +258,6 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -270,7 +266,6 @@ async def start(message: Message, state: FSMContext):
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    # Flyer
     if flyer_enabled():
         passed = await flyer_check(message.from_user.id)
         if not passed:
@@ -602,8 +597,7 @@ async def flyer_edit_btn_text(call: CallbackQuery, state: FSMContext):
         return
     await call.message.answer(
         "🔤 Пришли новый текст для кнопок.\n\n"
-        "Используй <code>{n}</code> — куда подставится номер.\n"
-        "Пример: <code>📢 Подпишись {n}</code>",
+        "Пример: <code>📢 Подпишись</code>",
         parse_mode="HTML"
     )
     await state.set_state(FlyerEdit.waiting_btn_text)
@@ -614,8 +608,8 @@ async def flyer_save_btn_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     text = message.text.strip()
-    if "{n}" not in text:
-        await message.answer("⚠️ Добавь {n} в текст кнопки (куда ставить номер).")
+    if not text:
+        await message.answer("⚠️ Текст не может быть пустым.")
         return
     set_setting("flyer_button_text", text)
     await state.clear()
