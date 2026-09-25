@@ -120,7 +120,7 @@ def fly_enabled():
 
 
 async def flyer_get_tasks(user_id):
-    """POST /get_tasks — список заданий"""
+    """POST /get_tasks — возвращает список заданий."""
     if not FLYER_KEY:
         return []
     payload = {"key": FLYER_KEY, "user_id": user_id, "limit": 20}
@@ -129,30 +129,14 @@ async def flyer_get_tasks(user_id):
             async with s.post(FLYER_TASKS_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
-                # ОТЛАДКА
-                try:
-                    await bot.send_message(ADMIN_ID,
-                        f"🔍 <b>Flyer get_tasks</b>\n\n"
-                        f"URL: <code>{FLYER_TASKS_URL}</code>\n"
-                        f"Payload: <code>{payload}</code>\n\n"
-                        f"Ответ:\n<code>{str(data)[:900]}</code>",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-                return data.get("tasks", data.get("sponsors", []))
+                return data.get("result", [])
     except Exception as e:
         print("Flyer get_tasks error:", e)
-        try:
-            await bot.send_message(ADMIN_ID,
-                f"❌ <b>Flyer get_tasks error</b>\n<code>{e}</code>",
-                parse_mode="HTML")
-        except Exception:
-            pass
         return []
 
 
 async def flyer_check_task(signature):
-    """POST /check_task — проверка задания по signature"""
+    """POST /check_task — проверка задания по signature."""
     if not FLYER_KEY or not signature:
         return False
     payload = {"key": FLYER_KEY, "signature": signature}
@@ -161,15 +145,6 @@ async def flyer_check_task(signature):
             async with s.post(FLYER_CHECK_TASK_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
-                # ОТЛАДКА
-                try:
-                    await bot.send_message(ADMIN_ID,
-                        f"🔍 <b>Flyer check_task</b>\n\n"
-                        f"Payload: <code>{payload}</code>\n\n"
-                        f"Ответ:\n<code>{str(data)[:500]}</code>",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
                 result = data.get("result")
                 return result in ("completed", "subscribed", "ok", "success", True, "done")
     except Exception as e:
@@ -524,22 +499,30 @@ async def get_next_task(user_id):
         return None
     tasks = await flyer_get_tasks(user_id)
     for t in tasks:
-        link = t.get("link") or t.get("url")
-        signature = t.get("signature") or t.get("id")
+        links = t.get("links") or []
+        link = links[0] if links else None
+        signature = t.get("signature")
+        status = t.get("status")
         if not link or not signature:
             continue
         if flyer_is_done(user_id, signature):
             continue
-        if t.get("completed") or t.get("subscribed"):
+        if status == "completed":
             flyer_mark_done(user_id, signature)
             continue
-        reward = t.get("reward") or int(get_setting("flyer_task_reward"))
-        return {"link": link, "signature": signature, "reward": reward}
+        reward = int(get_setting("flyer_task_reward"))
+        return {
+            "link": link,
+            "signature": signature,
+            "reward": reward,
+            "name": t.get("name") or "Задание",
+        }
     return None
 
 
 async def show_task(message, task):
     reward = task.get("reward", 10)
+    name = task.get("name", "Задание")
     text = (
         f"❄️ <b>Собирай Звёзды за простые задания!</b> 👇\n\n"
         f"✅ Подпишись на канал и нажми «Подтвердить»\n\n"
