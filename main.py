@@ -32,6 +32,7 @@ from database import (
     get_withdrawal_history,
     get_stats, create_promo, get_promo, list_promos, delete_promo, activate_promo,
     add_custom_op, list_custom_ops, delete_custom_op,
+    bh_reward_mark, bh_reward_was_given,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
@@ -46,7 +47,6 @@ dp = Dispatcher()
 BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 
-# ============ СОСТОЯНИЯ ============
 class PromoCreate(StatesGroup):
     waiting_code = State()
     waiting_amount = State()
@@ -98,7 +98,6 @@ def bh_enabled():
 
 
 async def bh_get_tasks(chat_id, count):
-    """ОП — /get-tasks-extended"""
     if not BOTOHUB_TOKEN:
         return {"tasks": [], "completed": True, "skip": True}
     payload = {"chat_id": chat_id, "max_op": count}
@@ -119,7 +118,6 @@ def tasks_enabled():
 
 
 async def bh_get_task(chat_id, skip=False):
-    """Задания — /get-tasks (одна ссылка за раз)"""
     if not BOTOHUB_TOKEN:
         return None
     payload = {"chat_id": chat_id, "is_task": True, "skip": skip}
@@ -199,7 +197,6 @@ def import_users_from_json(data):
     return count
 
 
-# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -403,7 +400,7 @@ async def profile(message: Message):
         f"👤 <b>ПРОФИЛЬ</b>\n\n"
         f"🧑 {name}\n"
         f"🆔 <code>{message.from_user.id}</code>\n\n"
-        f"⭐ Баланс: <b>{balance}</b>\n"
+        f"⭐ Баланс: <b>{balance}.00</b>\n"
         f"👥 Друзей: <b>{refs}</b>\n"
         f"⏳ Ожидают: <b>{pending}</b>\n"
         f"🏆 Место в топе: <b>#{place}</b>\n\n"
@@ -433,7 +430,7 @@ async def cb_daily_bonus(call: CallbackQuery):
     await call.answer(f"🎁 +{amount} ⭐", show_alert=True)
     try:
         await call.message.edit_text(
-            f"🎁 <b>Ежедневный бонус получен!</b>\n\n💫 +{amount} ⭐\n💰 Баланс: <b>{balance}</b> ⭐",
+            f"🎁 <b>Ежедневный бонус получен!</b>\n\n💫 +{amount}.00 ⭐\n💰 Баланс: <b>{balance}.00</b> ⭐",
             parse_mode="HTML")
     except Exception:
         pass
@@ -452,12 +449,12 @@ async def user_promo_check(message: Message, state: FSMContext):
     await state.clear()
     if ok:
         balance = get_balance(message.from_user.id)
-        await message.answer(f"{msg}\n💰 Баланс: <b>{balance}</b> ⭐", parse_mode="HTML")
+        await message.answer(f"{msg}\n💰 Баланс: <b>{balance}.00</b> ⭐", parse_mode="HTML")
     else:
         await message.answer(msg)
 
 
-# ============ ЗАДАНИЯ (BOTOHUB) ============
+# ============ ЗАДАНИЯ ============
 @dp.message(F.text == "📋 Задания")
 async def tasks_menu(message: Message):
     if not tasks_enabled():
@@ -470,21 +467,16 @@ async def tasks_menu(message: Message):
         await message.answer("❌ Ошибка сервера. Попробуй позже.")
         return
 
-    # Если предыдущее задание выполнено — награждаем
-    if data.get("prev_success") and not data.get("prev_outdated"):
-        reward = int(get_setting("task_reward"))
-        add_balance(message.from_user.id, reward)
-        await message.answer(f"✅ Предыдущее задание выполнено! +{reward} ⭐")
-
-    # Обработка ответа
     if data.get("fake"):
-        await message.answer("⚠️ Твой аккаунт помечен как фейковый. Задания недоступны.")
+        await message.answer("🚫 Задания недоступны для этого аккаунта")
         return
-    if data.get("completed"):
-        await message.answer("🎉 Все задания выполнены! Жди новых.")
-        return
-    if data.get("skip") or not data.get("tasks"):
-        await message.answer("❌ Пока нет доступных заданий. Попробуй позже.")
+    if data.get("completed") or data.get("skip") or not data.get("tasks"):
+        await message.answer(
+            "🎯 <b>Все задания выполнены!</b>\n\n"
+            "💰 Пока новых нет — заходи позже\n"
+            "👥 А пока приглашай друзей и получай звёзды за рефералов",
+            parse_mode="HTML"
+        )
         return
 
     link = data["tasks"][0]
@@ -497,7 +489,7 @@ async def show_task(message, link):
         f"❄️ <b>Собирай Звёзды за простые задания!</b> 👇\n\n"
         f"✅ Подпишись на канал и нажми «Подтвердить»\n\n"
         f"❌ За отписку или блокировку ресурса, вы получите бан\n\n"
-        f"<b>Вознаграждение: +{reward} 🌟</b>"
+        f"<b>Вознаграждение: +{reward}.00 🌟</b>"
     )
     kb = task_kb(link)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -516,33 +508,38 @@ async def task_skip(call: CallbackQuery):
         await call.message.answer("❌ Ошибка сервера.")
         return
 
-    if data.get("prev_success") and not data.get("prev_outdated"):
-        reward = int(get_setting("task_reward"))
-        add_balance(call.from_user.id, reward)
-        await call.message.answer(f"✅ Предыдущее задание выполнено! +{reward} ⭐")
-
-    if data.get("completed"):
-        await call.message.answer("🎉 Все задания выполнены!")
+    if data.get("fake"):
+        await call.message.answer("🚫 Задания недоступны для этого аккаунта")
         return
-    if data.get("skip") or not data.get("tasks"):
-        await call.message.answer("❌ Больше нет заданий.")
+    if data.get("completed") or data.get("skip") or not data.get("tasks"):
+        await call.message.answer(
+            "🎯 <b>Все задания выполнены!</b>\n\n"
+            "💰 Пока новых нет — заходи позже\n"
+            "👥 А пока приглашай друзей и получай звёзды за рефералов",
+            parse_mode="HTML"
+        )
         return
 
+    await call.message.answer(
+        "⏭ <b>Задание пропущено</b>\n\n"
+        "⏳ Загружаю следующее задание..."
+    )
     link = data["tasks"][0]
     await show_task(call.message, link)
 
 
-@dp.callback_query(F.data == "task_check")
+@dp.callback_query(F.data.startswith("task_check:"))
 async def task_check(call: CallbackQuery):
     user_id = call.from_user.id
     await call.answer()
+
+    check_link = call.data.split(":", 1)[1]
 
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
 
-    # Проверяем с паузами — Botohub должен увидеть подписку
     data = None
     for i in range(3):
         data = await bh_get_task(user_id, skip=False)
@@ -554,7 +551,15 @@ async def task_check(call: CallbackQuery):
     if not data:
         if msg:
             try:
-                await msg.edit_text("❌ Ошибка сервера.")
+                await msg.edit_text("❌ Ошибка сервера. Попробуй позже.")
+            except Exception:
+                pass
+        return
+
+    if data.get("fake"):
+        if msg:
+            try:
+                await msg.edit_text("🚫 Задания недоступны для этого аккаунта")
             except Exception:
                 pass
         return
@@ -567,9 +572,20 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    # Награда
     reward = int(get_setting("task_reward"))
-    add_balance(user_id, reward)
+    already = bh_reward_was_given(user_id, check_link)
+    if not already:
+        add_balance(user_id, reward)
+        bh_reward_mark(user_id, check_link)
+        balance = get_balance(user_id)
+        reward_text = (
+            f"✅ <b>Задание выполнено!</b>\n\n"
+            f"💰 Награда: <b>+{reward}.00</b> ⭐\n"
+            f"💎 Баланс: <b>{balance}.00</b> ⭐\n\n"
+            f"⏳ Загружаю следующее задание..."
+        )
+    else:
+        reward_text = "✅ Задание уже было засчитано ранее."
 
     if msg:
         try:
@@ -580,14 +596,15 @@ async def task_check(call: CallbackQuery):
         await call.message.delete()
     except Exception:
         pass
-    await call.message.answer(f"✅ Задание выполнено! +{reward} ⭐")
+    await call.message.answer(reward_text, parse_mode="HTML")
 
-    # Следующее задание
-    if data.get("completed"):
-        await call.message.answer("🎉 Все задания выполнены! Жди новых.")
-        return
-    if data.get("skip") or not data.get("tasks"):
-        await call.message.answer("❌ Больше нет заданий.")
+    if data.get("completed") or data.get("skip") or not data.get("tasks"):
+        await call.message.answer(
+            "🎯 <b>Все задания выполнены!</b>\n\n"
+            "💰 Пока новых нет — заходи позже\n"
+            "👥 А пока приглашай друзей и получай звёзды за рефералов",
+            parse_mode="HTML"
+        )
         return
 
     link = data["tasks"][0]
@@ -743,7 +760,6 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# --- BOTOHUB ОП ---
 def bh_menu_text():
     enabled = bh_enabled()
     return (
@@ -856,13 +872,12 @@ async def bh_save_wd(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
 
 
-# --- ЗАДАНИЯ ---
 def tasks_menu_text():
     enabled = tasks_enabled()
     return (
         f"🎯 <b>Задания (Botohub)</b>\n\n"
         f"Статус: {'🟢 включены' if enabled else '🔴 выключены'}\n\n"
-        f"💰 Награда за задание: <b>{get_setting('task_reward')}</b> ⭐"
+        f"💰 Награда за задание: <b>{get_setting('task_reward')}.00</b> ⭐"
     )
 
 
@@ -906,10 +921,9 @@ async def tasks_save_reward(message: Message, state: FSMContext):
         return
     set_setting("task_reward", val)
     await state.clear()
-    await message.answer(f"✅ Награда: {val} ⭐", reply_markup=back_admin_kb())
+    await message.answer(f"✅ Награда: {val}.00 ⭐", reply_markup=back_admin_kb())
 
 
-# --- СВОИ ОП ---
 @dp.callback_query(F.data == "cop_menu")
 async def cop_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1000,7 +1014,6 @@ async def cop_del_id(message: Message, state: FSMContext):
     await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
 
 
-# --- БЭКАП ---
 @dp.callback_query(F.data == "backup_help")
 async def backup_help(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1062,7 +1075,6 @@ async def restore_doc(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
 
 
-# --- ЗАЯВКИ ---
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1149,7 +1161,6 @@ async def wd_history(call: CallbackQuery):
     await call.message.edit_text(text, reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
-# --- ПРИВАТКА ---
 @dp.callback_query(F.data == "priv_menu")
 async def priv_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1223,7 +1234,6 @@ async def priv_delete(call: CallbackQuery):
     await call.message.edit_text("🗑 Приватка удалена", reply_markup=back_admin_kb())
 
 
-# --- РАССЫЛКА ---
 @dp.callback_query(F.data == "broadcast")
 async def broadcast(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1271,7 +1281,6 @@ async def broadcast_confirm(call: CallbackQuery, state: FSMContext):
                                  reply_markup=back_admin_kb())
 
 
-# --- НАЧИСЛИТЬ ---
 @dp.callback_query(F.data == "give_start")
 async def give_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1315,7 +1324,6 @@ async def give_amount(message: Message, state: FSMContext):
                          reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
-# --- ЮЗЕР ---
 @dp.callback_query(F.data == "user_find")
 async def user_find(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1367,7 +1375,6 @@ async def user_refs(call: CallbackQuery):
     await call.message.answer(text, parse_mode="HTML")
 
 
-# --- ПРОМОКОДЫ ---
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1457,7 +1464,6 @@ async def promo_delete_step(message: Message, state: FSMContext):
     await message.answer(f"🗑 Удалён <code>{code}</code>", parse_mode="HTML")
 
 
-# --- СТАТИСТИКА ---
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1470,7 +1476,6 @@ async def stats(call: CallbackQuery):
         reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
-# --- НАСТРОЙКИ ---
 @dp.callback_query(F.data == "settings")
 async def settings(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
