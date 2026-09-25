@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS, DB,
     BOTOHUB_TOKEN, BOTOHUB_URL,
-    FLYER_KEY, FLYER_URL,
+    FLYER_KEY, FLYER_CHECK_URL, FLYER_TASKS_URL, FLYER_CHECK_TASK_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -100,18 +100,13 @@ def bh_enabled():
 
 
 async def bh_get_tasks(chat_id, count):
-    """Запрашивает у Botohub список спонсоров. Возвращает dict."""
     if not BOTOHUB_TOKEN:
         return {"tasks": [], "completed": True, "skip": True}
-    payload = {
-        "chat_id": chat_id,
-        "max_op": count,
-    }
+    payload = {"chat_id": chat_id, "max_op": count}
     headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(BOTOHUB_URL,
-                              json=payload, headers=headers,
+            async with s.post(BOTOHUB_URL, json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 return await r.json()
     except Exception as e:
@@ -119,44 +114,42 @@ async def bh_get_tasks(chat_id, count):
         return {"tasks": [], "completed": True, "skip": True}
 
 
-async def bh_all_done(chat_id, count):
-    """True — все спонсоры пройдены."""
-    data = await bh_get_tasks(chat_id, count)
-    if data.get("completed") or data.get("skip"):
-        return True
-    tasks = data.get("tasks", [])
-    if not tasks:
-        return True
-    return all(t.get("completed") for t in tasks)
-
-
-# ============ FLYER ============
+# ============ FLYER (ЗАДАНИЯ) ============
 def fly_enabled():
     return get_setting("flyer_enabled") == "1"
 
 
 async def flyer_get_tasks(user_id):
+    """POST /get_tasks — список заданий"""
     if not FLYER_KEY:
         return []
-    payload = {"key": FLYER_KEY, "user_id": user_id}
+    payload = {"key": FLYER_KEY, "user_id": user_id, "limit": 20}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(FLYER_URL, json=payload,
+            async with s.post(FLYER_TASKS_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
-                return data.get("sponsors", data.get("offers", []))
+                return data.get("tasks", data.get("sponsors", []))
     except Exception as e:
-        print("Flyer error:", e)
+        print("Flyer get_tasks error:", e)
         return []
 
 
-async def flyer_check_one(user_id, link):
-    tasks = await flyer_get_tasks(user_id)
-    for t in tasks:
-        if (t.get("link") or t.get("url")) == link:
-            status = t.get("status") or t.get("subscribed")
-            return status in ("subscribed", True, "ok", "active")
-    return True
+async def flyer_check_task(signature):
+    """POST /check_task — проверка задания по signature"""
+    if not FLYER_KEY or not signature:
+        return False
+    payload = {"key": FLYER_KEY, "signature": signature}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(FLYER_CHECK_TASK_URL, json=payload,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                result = data.get("result")
+                return result in ("completed", "subscribed", "ok", "success", True, "done")
+    except Exception as e:
+        print("Flyer check_task error:", e)
+        return False
 
 
 # ============ БЭКАП ============
@@ -258,7 +251,6 @@ def build_priv_buttons():
 
 # ============ ЭКРАН ОП ============
 async def show_op_screen(message, user_id, op_type, cb_data_confirm):
-    """Показывает экран ОП: свои каналы + Botohub задачи."""
     count_key = "botohub_entry_count" if op_type == "entry" else "botohub_withdraw_count"
     try:
         count = int(get_setting(count_key))
@@ -269,7 +261,6 @@ async def show_op_screen(message, user_id, op_type, cb_data_confirm):
     row = []
     btn_text = get_setting("botohub_btn_text")
 
-    # Свои каналы
     customs = list_custom_ops(op_type)
     for i, (cid, title, link) in enumerate(customs, 1):
         row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
@@ -277,7 +268,6 @@ async def show_op_screen(message, user_id, op_type, cb_data_confirm):
             buttons.append(row)
             row = []
 
-    # Botohub
     data = await bh_get_tasks(user_id, count)
     tasks = data.get("tasks", [])
     for i, t in enumerate(tasks, 1):
@@ -325,7 +315,6 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -334,7 +323,6 @@ async def start(message: Message, state: FSMContext):
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    # ОП на входе
     if bh_enabled() and BOTOHUB_TOKEN:
         try:
             count = int(get_setting("botohub_entry_count"))
@@ -512,16 +500,16 @@ async def get_next_task(user_id):
     tasks = await flyer_get_tasks(user_id)
     for t in tasks:
         link = t.get("link") or t.get("url")
-        if not link:
+        signature = t.get("signature") or t.get("id")
+        if not link or not signature:
             continue
-        if flyer_is_done(user_id, link):
+        if flyer_is_done(user_id, signature):
             continue
-        status = t.get("status") or t.get("subscribed")
-        if status in ("subscribed", True, "ok", "active"):
-            flyer_mark_done(user_id, link)
+        if t.get("completed") or t.get("subscribed"):
+            flyer_mark_done(user_id, signature)
             continue
-        reward = int(get_setting("flyer_task_reward"))
-        return {"link": link, "reward": reward}
+        reward = t.get("reward") or int(get_setting("flyer_task_reward"))
+        return {"link": link, "signature": signature, "reward": reward}
     return None
 
 
@@ -559,7 +547,7 @@ async def task_check(call: CallbackQuery):
     if not task:
         await call.answer("Задание не найдено", show_alert=True)
         return
-    link = task["link"]
+    signature = task["signature"]
     reward = task["reward"]
 
     try:
@@ -569,7 +557,7 @@ async def task_check(call: CallbackQuery):
 
     subscribed = False
     for i in range(3):
-        subscribed = await flyer_check_one(user_id, link)
+        subscribed = await flyer_check_task(signature)
         if subscribed:
             break
         if i < 2:
@@ -583,7 +571,7 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    if flyer_is_done(user_id, link):
+    if flyer_is_done(user_id, signature):
         if msg:
             try:
                 await msg.edit_text("✅ Уже засчитано")
@@ -591,7 +579,7 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    flyer_mark_done(user_id, link)
+    flyer_mark_done(user_id, signature)
     add_balance(user_id, reward)
 
     if msg:
