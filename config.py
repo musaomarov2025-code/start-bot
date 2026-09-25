@@ -39,7 +39,6 @@ DEFAULTS = {
         " & 👧 Я девушка - https://t.me/vsetut_topbot?start=chekpointop0408"
     ),
 
-    # Botohub — ОП
     "botohub_enabled": "1",
     "botohub_entry_count": "6",
     "botohub_withdraw_count": "6",
@@ -49,7 +48,6 @@ DEFAULTS = {
     ),
     "botohub_btn_text": "📢 Спонсор",
 
-    # Botohub — Задания
     "tasks_enabled": "1",
     "task_reward": "10",
 }
