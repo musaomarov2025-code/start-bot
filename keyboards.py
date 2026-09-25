@@ -47,10 +47,11 @@ def gifts_kb():
 
 
 def task_kb(link):
+    short = link[:60]
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Перейти", url=link),
          InlineKeyboardButton(text="⏭ Пропустить", callback_data="task_skip")],
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="task_check")],
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"task_check:{short}")],
     ])
 
 
