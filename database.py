@@ -77,10 +77,28 @@ def init_db():
             PRIMARY KEY (user_id, link)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            link TEXT,
+            reward INTEGER DEFAULT 10,
+            active INTEGER DEFAULT 1
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_tasks_done (
+            user_id INTEGER,
+            task_id INTEGER,
+            done_at TEXT,
+            PRIMARY KEY (user_id, task_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
 
+# ============ НАСТРОЙКИ ============
 def get_setting(key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -359,20 +377,58 @@ def get_stats():
     total = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM users WHERE registered_at LIKE ?", (str(date.today()) + "%",))
     today = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(balance),0) FROM users")
+    total_balance = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM referrals WHERE status = 'confirmed'")
+    total_refs = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'")
     pending = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'completed'")
     done = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'rejected'")
+    rejected = cur.fetchone()[0]
     cur.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'completed'")
     total_stars = cur.fetchone()[0]
     conn.close()
     return {
         "total": total,
         "today": today,
+        "total_balance": total_balance,
+        "total_refs": total_refs,
         "pending": pending,
         "done": done,
+        "rejected": rejected,
         "total_stars": total_stars,
     }
+
+
+def get_top_balance(limit=10):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_top_refs(limit=10):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT u.user_id, u.username, COUNT(r.id) as refs
+        FROM users u
+        LEFT JOIN referrals r ON r.referrer_id = u.user_id AND r.status = 'confirmed'
+        GROUP BY u.user_id
+        HAVING refs > 0
+        ORDER BY refs DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 # ============ ПРОМОКОДЫ ============
@@ -500,3 +556,67 @@ def bh_reward_was_given(user_id, link):
     row = cur.fetchone()
     conn.close()
     return row is not None
+
+
+# ============ СВОИ ЗАДАНИЯ ============
+def add_custom_task(title, link, reward):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)",
+        (title, link, reward)
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_custom_tasks():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_custom_task(task_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks WHERE id = ?", (task_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def delete_custom_task(task_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM custom_tasks WHERE id = ?", (task_id,))
+    cur.execute("DELETE FROM custom_tasks_done WHERE task_id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_next_custom_task(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, title, link, reward FROM custom_tasks
+        WHERE active = 1 AND id NOT IN (
+            SELECT task_id FROM custom_tasks_done WHERE user_id = ?
+        ) ORDER BY id LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def mark_custom_task_done(user_id, task_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO custom_tasks_done (user_id, task_id, done_at) VALUES (?, ?, ?)",
+        (user_id, task_id, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
