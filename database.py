@@ -7,7 +7,6 @@ def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
-    # Пользователи
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -18,7 +17,6 @@ def init_db():
             registered_at TEXT
         )
     """)
-    # Рефералы
     cur.execute("""
         CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,7 +27,6 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     """)
-    # Заявки на вывод
     cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,14 +37,12 @@ def init_db():
             created_at TEXT
         )
     """)
-    # Настройки
     cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     """)
-    # Промокоды
     cur.execute("""
         CREATE TABLE IF NOT EXISTS promos (
             code TEXT PRIMARY KEY,
@@ -65,19 +60,17 @@ def init_db():
             PRIMARY KEY (code, user_id)
         )
     """)
-    # Свои ОП (каналы, которые ты добавляешь вручную)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS custom_ops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
             link TEXT,
-            type TEXT,          -- 'entry' или 'withdraw'
+            type TEXT,
             active INTEGER DEFAULT 1
         )
     """)
-    # Выполненные задания Flyer
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS flyer_done (
+        CREATE TABLE IF NOT EXISTS bh_rewards (
             user_id INTEGER,
             link TEXT,
             done_at TEXT,
@@ -88,7 +81,6 @@ def init_db():
     conn.close()
 
 
-# ============ НАСТРОЙКИ ============
 def get_setting(key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -459,7 +451,6 @@ def activate_promo(code, user_id):
 
 # ============ СВОИ ОП ============
 def add_custom_op(title, link, op_type):
-    """op_type: 'entry' или 'withdraw'"""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
@@ -490,22 +481,22 @@ def delete_custom_op(op_id):
     conn.close()
 
 
-# ============ FLYER ЗАДАНИЯ ============
-def flyer_mark_done(user_id, link):
+# ============ BOTOHUB НАГРАДЫ ============
+def bh_reward_mark(user_id, link):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO flyer_done (user_id, link, done_at) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO bh_rewards (user_id, link, done_at) VALUES (?, ?, ?)",
         (user_id, link, datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
 
 
-def flyer_is_done(user_id, link):
+def bh_reward_was_given(user_id, link):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM flyer_done WHERE user_id = ? AND link = ?", (user_id, link))
+    cur.execute("SELECT 1 FROM bh_rewards WHERE user_id = ? AND link = ?", (user_id, link))
     row = cur.fetchone()
     conn.close()
     return row is not None
