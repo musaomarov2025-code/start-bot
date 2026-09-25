@@ -17,8 +17,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS, DB,
-    BOTOHUB_TOKEN, BOTOHUB_URL,
-    FLYER_KEY, FLYER_CHECK_URL, FLYER_TASKS_URL, FLYER_CHECK_TASK_URL,
+    BOTOHUB_TOKEN, BOTOHUB_URL, BOTOHUB_TASKS_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -33,13 +32,12 @@ from database import (
     get_withdrawal_history,
     get_stats, create_promo, get_promo, list_promos, delete_promo, activate_promo,
     add_custom_op, list_custom_ops, delete_custom_op,
-    flyer_mark_done, flyer_is_done,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
-    bh_kb, fly_kb, cop_kb, cop_type_kb,
+    bh_kb, tasks_kb, cop_kb, cop_type_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -83,7 +81,7 @@ class BHEdit(StatesGroup):
     waiting_entry = State()
     waiting_wd = State()
 
-class FlyEdit(StatesGroup):
+class TasksEdit(StatesGroup):
     waiting_reward = State()
 
 class CopAdd(StatesGroup):
@@ -94,12 +92,13 @@ class CopDel(StatesGroup):
     waiting_id = State()
 
 
-# ============ BOTOHUB ============
+# ============ BOTOHUB — ОП ============
 def bh_enabled():
     return get_setting("botohub_enabled") == "1"
 
 
 async def bh_get_tasks(chat_id, count):
+    """ОП — /get-tasks-extended"""
     if not BOTOHUB_TOKEN:
         return {"tasks": [], "completed": True, "skip": True}
     payload = {"chat_id": chat_id, "max_op": count}
@@ -110,46 +109,29 @@ async def bh_get_tasks(chat_id, count):
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 return await r.json()
     except Exception as e:
-        print("Botohub error:", e)
+        print("Botohub ОП error:", e)
         return {"tasks": [], "completed": True, "skip": True}
 
 
-# ============ FLYER (ЗАДАНИЯ) ============
-def fly_enabled():
-    return get_setting("flyer_enabled") == "1"
+# ============ BOTOHUB — ЗАДАНИЯ ============
+def tasks_enabled():
+    return get_setting("tasks_enabled") == "1"
 
 
-async def flyer_get_tasks(user_id):
-    """POST /get_tasks — возвращает список заданий."""
-    if not FLYER_KEY:
-        return []
-    payload = {"key": FLYER_KEY, "user_id": user_id, "limit": 20}
+async def bh_get_task(chat_id, skip=False):
+    """Задания — /get-tasks (одна ссылка за раз)"""
+    if not BOTOHUB_TOKEN:
+        return None
+    payload = {"chat_id": chat_id, "is_task": True, "skip": skip}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(FLYER_TASKS_URL, json=payload,
+            async with s.post(BOTOHUB_TASKS_URL, json=payload, headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                return data.get("result", [])
+                return await r.json()
     except Exception as e:
-        print("Flyer get_tasks error:", e)
-        return []
-
-
-async def flyer_check_task(signature):
-    """POST /check_task — проверка задания по signature."""
-    if not FLYER_KEY or not signature:
-        return False
-    payload = {"key": FLYER_KEY, "signature": signature}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(FLYER_CHECK_TASK_URL, json=payload,
-                              timeout=aiohttp.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                result = data.get("result")
-                return result in ("completed", "subscribed", "ok", "success", True, "done")
-    except Exception as e:
-        print("Flyer check_task error:", e)
-        return False
+        print("Botohub tasks error:", e)
+        return None
 
 
 # ============ БЭКАП ============
@@ -172,8 +154,6 @@ def export_users_to_json():
                    for r in cur.fetchall()]
     cur.execute("SELECT key, value FROM settings")
     settings = {r[0]: r[1] for r in cur.fetchall()}
-    cur.execute("SELECT user_id, link, done_at FROM flyer_done")
-    fl_done = [{"user_id": r[0], "link": r[1], "done_at": r[2]} for r in cur.fetchall()]
     cur.execute("SELECT id, title, link, type, active FROM custom_ops")
     custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
                   for r in cur.fetchall()]
@@ -182,7 +162,7 @@ def export_users_to_json():
         "exported_at": datetime.now().isoformat(),
         "users": users, "referrals": referrals, "promos": promos,
         "withdrawals": withdrawals, "settings": settings,
-        "flyer_done": fl_done, "custom_ops": custom_ops,
+        "custom_ops": custom_ops,
     }
 
 
@@ -210,9 +190,6 @@ def import_users_from_json(data):
     for w in data.get("withdrawals", []):
         cur.execute("INSERT INTO withdrawals (user_id, amount, gift, status, created_at) VALUES (?,?,?,?,?)",
                     (w["user_id"], w["amount"], w.get("gift"), w.get("status", "pending"), w.get("created_at")))
-    for fd in data.get("flyer_done", []):
-        cur.execute("INSERT OR IGNORE INTO flyer_done (user_id, link, done_at) VALUES (?,?,?)",
-                    (fd["user_id"], fd["link"], fd.get("done_at")))
     cur.execute("DELETE FROM custom_ops")
     for co in data.get("custom_ops", []):
         cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?,?,?,?)",
@@ -480,70 +457,79 @@ async def user_promo_check(message: Message, state: FSMContext):
         await message.answer(msg)
 
 
-# ============ ЗАДАНИЯ (FLYER) ============
+# ============ ЗАДАНИЯ (BOTOHUB) ============
 @dp.message(F.text == "📋 Задания")
 async def tasks_menu(message: Message):
-    if not fly_enabled():
+    if not tasks_enabled():
         await message.answer("❌ Задания временно недоступны.")
         return
     await message.answer("⏳ Ищу новое задание...")
-    task = await get_next_task(message.from_user.id)
-    if not task:
+
+    data = await bh_get_task(message.from_user.id, skip=False)
+    if not data:
+        await message.answer("❌ Ошибка сервера. Попробуй позже.")
+        return
+
+    # Если предыдущее задание выполнено — награждаем
+    if data.get("prev_success") and not data.get("prev_outdated"):
+        reward = int(get_setting("task_reward"))
+        add_balance(message.from_user.id, reward)
+        await message.answer(f"✅ Предыдущее задание выполнено! +{reward} ⭐")
+
+    # Обработка ответа
+    if data.get("fake"):
+        await message.answer("⚠️ Твой аккаунт помечен как фейковый. Задания недоступны.")
+        return
+    if data.get("completed"):
+        await message.answer("🎉 Все задания выполнены! Жди новых.")
+        return
+    if data.get("skip") or not data.get("tasks"):
         await message.answer("❌ Пока нет доступных заданий. Попробуй позже.")
         return
-    await show_task(message, task)
+
+    link = data["tasks"][0]
+    await show_task(message, link)
 
 
-async def get_next_task(user_id):
-    if not fly_enabled():
-        return None
-    tasks = await flyer_get_tasks(user_id)
-    for t in tasks:
-        links = t.get("links") or []
-        link = links[0] if links else None
-        signature = t.get("signature")
-        status = t.get("status")
-        if not link or not signature:
-            continue
-        if flyer_is_done(user_id, signature):
-            continue
-        if status == "completed":
-            flyer_mark_done(user_id, signature)
-            continue
-        reward = int(get_setting("flyer_task_reward"))
-        return {
-            "link": link,
-            "signature": signature,
-            "reward": reward,
-            "name": t.get("name") or "Задание",
-        }
-    return None
-
-
-async def show_task(message, task):
-    reward = task.get("reward", 10)
-    name = task.get("name", "Задание")
+async def show_task(message, link):
+    reward = int(get_setting("task_reward"))
     text = (
         f"❄️ <b>Собирай Звёзды за простые задания!</b> 👇\n\n"
         f"✅ Подпишись на канал и нажми «Подтвердить»\n\n"
         f"❌ За отписку или блокировку ресурса, вы получите бан\n\n"
         f"<b>Вознаграждение: +{reward} 🌟</b>"
     )
-    kb = task_kb(task["link"])
+    kb = task_kb(link)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "task_skip")
 async def task_skip(call: CallbackQuery):
+    await call.answer()
     try:
         await call.message.delete()
     except Exception:
         pass
-    task = await get_next_task(call.from_user.id)
-    if not task:
+
+    data = await bh_get_task(call.from_user.id, skip=True)
+    if not data:
+        await call.message.answer("❌ Ошибка сервера.")
+        return
+
+    if data.get("prev_success") and not data.get("prev_outdated"):
+        reward = int(get_setting("task_reward"))
+        add_balance(call.from_user.id, reward)
+        await call.message.answer(f"✅ Предыдущее задание выполнено! +{reward} ⭐")
+
+    if data.get("completed"):
+        await call.message.answer("🎉 Все задания выполнены!")
+        return
+    if data.get("skip") or not data.get("tasks"):
         await call.message.answer("❌ Больше нет заданий.")
         return
-    await show_task(call.message, task)
+
+    link = data["tasks"][0]
+    await show_task(call.message, link)
 
 
 @dp.callback_query(F.data == "task_check")
@@ -551,27 +537,29 @@ async def task_check(call: CallbackQuery):
     user_id = call.from_user.id
     await call.answer()
 
-    task = await get_next_task(user_id)
-    if not task:
-        await call.answer("Задание не найдено", show_alert=True)
-        return
-    signature = task["signature"]
-    reward = task["reward"]
-
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
 
-    subscribed = False
+    # Проверяем с паузами — Botohub должен увидеть подписку
+    data = None
     for i in range(3):
-        subscribed = await flyer_check_task(signature)
-        if subscribed:
+        data = await bh_get_task(user_id, skip=False)
+        if data and data.get("prev_success"):
             break
         if i < 2:
             await asyncio.sleep(7)
 
-    if not subscribed:
+    if not data:
+        if msg:
+            try:
+                await msg.edit_text("❌ Ошибка сервера.")
+            except Exception:
+                pass
+        return
+
+    if not data.get("prev_success"):
         if msg:
             try:
                 await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
@@ -579,15 +567,8 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    if flyer_is_done(user_id, signature):
-        if msg:
-            try:
-                await msg.edit_text("✅ Уже засчитано")
-            except Exception:
-                pass
-        return
-
-    flyer_mark_done(user_id, signature)
+    # Награда
+    reward = int(get_setting("task_reward"))
     add_balance(user_id, reward)
 
     if msg:
@@ -601,9 +582,16 @@ async def task_check(call: CallbackQuery):
         pass
     await call.message.answer(f"✅ Задание выполнено! +{reward} ⭐")
 
-    next_task = await get_next_task(user_id)
-    if next_task:
-        await show_task(call.message, next_task)
+    # Следующее задание
+    if data.get("completed"):
+        await call.message.answer("🎉 Все задания выполнены! Жди новых.")
+        return
+    if data.get("skip") or not data.get("tasks"):
+        await call.message.answer("❌ Больше нет заданий.")
+        return
+
+    link = data["tasks"][0]
+    await show_task(call.message, link)
 
 
 # ============ ВЫВОД ============
@@ -755,7 +743,7 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# --- BOTOHUB ---
+# --- BOTOHUB ОП ---
 def bh_menu_text():
     enabled = bh_enabled()
     return (
@@ -811,7 +799,7 @@ async def bh_save_text(message: Message, state: FSMContext):
 async def bh_edit_btn(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🔤 Пришли текст для кнопок (например, «📢 Спонсор»):")
+    await call.message.answer("🔤 Пришли текст для кнопок:")
     await state.set_state(BHEdit.waiting_btn)
 
 
@@ -868,48 +856,47 @@ async def bh_save_wd(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
 
 
-# --- FLYER ---
-def fly_menu_text():
-    enabled = fly_enabled()
+# --- ЗАДАНИЯ ---
+def tasks_menu_text():
+    enabled = tasks_enabled()
     return (
-        f"🎯 <b>Flyer задания</b>\n\n"
-        f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
-        f"🔑 Ключ: <code>{FLYER_KEY[:20]}...</code>\n\n"
-        f"💰 Награда за задание: <b>{get_setting('flyer_task_reward')}</b> ⭐"
+        f"🎯 <b>Задания (Botohub)</b>\n\n"
+        f"Статус: {'🟢 включены' if enabled else '🔴 выключены'}\n\n"
+        f"💰 Награда за задание: <b>{get_setting('task_reward')}</b> ⭐"
     )
 
 
-@dp.callback_query(F.data == "fly_menu")
-async def fly_menu(call: CallbackQuery):
+@dp.callback_query(F.data == "tasks_menu")
+async def tasks_admin_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.edit_text(fly_menu_text(),
-                                 reply_markup=fly_kb(fly_enabled()),
+    await call.message.edit_text(tasks_menu_text(),
+                                 reply_markup=tasks_kb(tasks_enabled()),
                                  parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "fly_toggle")
-async def fly_toggle(call: CallbackQuery):
+@dp.callback_query(F.data == "tasks_toggle")
+async def tasks_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    current = get_setting("flyer_enabled") == "1"
-    set_setting("flyer_enabled", "0" if current else "1")
+    current = get_setting("tasks_enabled") == "1"
+    set_setting("tasks_enabled", "0" if current else "1")
     await call.answer("✅ Изменено")
-    await call.message.edit_text(fly_menu_text(),
-                                 reply_markup=fly_kb(not current),
+    await call.message.edit_text(tasks_menu_text(),
+                                 reply_markup=tasks_kb(not current),
                                  parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "fly_edit_reward")
-async def fly_edit_reward(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "tasks_edit_reward")
+async def tasks_edit_reward(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer("💰 Сколько звёзд давать за задание?")
-    await state.set_state(FlyEdit.waiting_reward)
+    await state.set_state(TasksEdit.waiting_reward)
 
 
-@dp.message(FlyEdit.waiting_reward)
-async def fly_save_reward(message: Message, state: FSMContext):
+@dp.message(TasksEdit.waiting_reward)
+async def tasks_save_reward(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
@@ -917,7 +904,7 @@ async def fly_save_reward(message: Message, state: FSMContext):
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
-    set_setting("flyer_task_reward", val)
+    set_setting("task_reward", val)
     await state.clear()
     await message.answer(f"✅ Награда: {val} ⭐", reply_markup=back_admin_kb())
 
