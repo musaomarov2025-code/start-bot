@@ -30,15 +30,18 @@ from database import (
     get_refs_to_remind, mark_reminded,
     create_withdrawal, get_withdrawal, get_pending_withdrawals, set_withdrawal_status,
     get_withdrawal_history,
-    get_stats, create_promo, get_promo, list_promos, delete_promo, activate_promo,
+    get_stats, get_top_balance, get_top_refs,
+    create_promo, get_promo, list_promos, delete_promo, activate_promo,
     add_custom_op, list_custom_ops, delete_custom_op,
     bh_reward_mark, bh_reward_was_given,
+    add_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
+    get_next_custom_task, mark_custom_task_done,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
-    bh_kb, tasks_kb, cop_kb, cop_type_kb,
+    bh_kb, tasks_kb, ctasks_kb, cop_kb, cop_type_kb, stats_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -47,6 +50,7 @@ dp = Dispatcher()
 BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 
+# ============ СОСТОЯНИЯ ============
 class PromoCreate(StatesGroup):
     waiting_code = State()
     waiting_amount = State()
@@ -83,6 +87,14 @@ class BHEdit(StatesGroup):
 
 class TasksEdit(StatesGroup):
     waiting_reward = State()
+
+class CTaskAdd(StatesGroup):
+    waiting_title = State()
+    waiting_link = State()
+    waiting_reward = State()
+
+class CTaskDel(StatesGroup):
+    waiting_id = State()
 
 class CopAdd(StatesGroup):
     waiting_title = State()
@@ -155,12 +167,15 @@ def export_users_to_json():
     cur.execute("SELECT id, title, link, type, active FROM custom_ops")
     custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
                   for r in cur.fetchall()]
+    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks")
+    custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4]}
+                    for r in cur.fetchall()]
     conn.close()
     return {
         "exported_at": datetime.now().isoformat(),
         "users": users, "referrals": referrals, "promos": promos,
         "withdrawals": withdrawals, "settings": settings,
-        "custom_ops": custom_ops,
+        "custom_ops": custom_ops, "custom_tasks": custom_tasks,
     }
 
 
@@ -192,11 +207,16 @@ def import_users_from_json(data):
     for co in data.get("custom_ops", []):
         cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?,?,?,?)",
                     (co["title"], co["link"], co["type"], co.get("active", 1)))
+    cur.execute("DELETE FROM custom_tasks")
+    for ct in data.get("custom_tasks", []):
+        cur.execute("INSERT INTO custom_tasks (title, link, reward, active) VALUES (?,?,?,?)",
+                    (ct["title"], ct["link"], ct["reward"], ct.get("active", 1)))
     conn.commit()
     conn.close()
     return count
 
 
+# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -462,36 +482,44 @@ async def tasks_menu(message: Message):
         return
     await message.answer("⏳ Ищу новое задание...")
 
+    # 1. Пробуем Botohub
     data = await bh_get_task(message.from_user.id, skip=False)
-    if not data:
-        await message.answer("❌ Ошибка сервера. Попробуй позже.")
+    if data:
+        if data.get("fake"):
+            await message.answer("🚫 Задания недоступны для этого аккаунта")
+            return
+        tasks = data.get("tasks", [])
+        if tasks:
+            link = tasks[0]
+            await show_task(message, link, source="bh")
+            return
+
+    # 2. Если Botohub пуст — пробуем свои задания
+    custom = get_next_custom_task(message.from_user.id)
+    if custom:
+        tid, title, link, reward = custom
+        await show_task(message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    if data.get("fake"):
-        await message.answer("🚫 Задания недоступны для этого аккаунта")
-        return
-    if data.get("completed") or data.get("skip") or not data.get("tasks"):
-        await message.answer(
-            "🎯 <b>Все задания выполнены!</b>\n\n"
-            "💰 Пока новых нет — заходи позже\n"
-            "👥 А пока приглашай друзей и получай звёзды за рефералов",
-            parse_mode="HTML"
-        )
-        return
-
-    link = data["tasks"][0]
-    await show_task(message, link)
+    # 3. Совсем пусто
+    await message.answer(
+        "🎯 <b>Все задания выполнены!</b>\n\n"
+        "💰 Пока новых нет — заходи позже\n"
+        "👥 А пока приглашай друзей и получай звёзды за рефералов",
+        parse_mode="HTML"
+    )
 
 
-async def show_task(message, link):
-    reward = int(get_setting("task_reward"))
+async def show_task(message, link, source="bh", reward=None):
+    if reward is None:
+        reward = int(get_setting("task_reward"))
     text = (
         f"❄️ <b>Собирай Звёзды за простые задания!</b> 👇\n\n"
         f"✅ Подпишись на канал и нажми «Подтвердить»\n\n"
         f"❌ За отписку или блокировку ресурса, вы получите бан\n\n"
         f"<b>Вознаграждение: +{reward}.00 🌟</b>"
     )
-    kb = task_kb(link)
+    kb = task_kb(link, source)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -504,28 +532,38 @@ async def task_skip(call: CallbackQuery):
         pass
 
     data = await bh_get_task(call.from_user.id, skip=True)
-    if not data:
-        await call.message.answer("❌ Ошибка сервера.")
-        return
+    if data:
+        if data.get("fake"):
+            await call.message.answer("🚫 Задания недоступны для этого аккаунта")
+            return
+        tasks = data.get("tasks", [])
+        if tasks:
+            await call.message.answer(
+                "⏭ <b>Задание пропущено</b>\n\n"
+                "⏳ Загружаю следующее задание...",
+                parse_mode="HTML"
+            )
+            link = tasks[0]
+            await show_task(call.message, link, source="bh")
+            return
 
-    if data.get("fake"):
-        await call.message.answer("🚫 Задания недоступны для этого аккаунта")
-        return
-    if data.get("completed") or data.get("skip") or not data.get("tasks"):
+    custom = get_next_custom_task(call.from_user.id)
+    if custom:
+        tid, title, link, reward = custom
         await call.message.answer(
-            "🎯 <b>Все задания выполнены!</b>\n\n"
-            "💰 Пока новых нет — заходи позже\n"
-            "👥 А пока приглашай друзей и получай звёзды за рефералов",
+            "⏭ <b>Задание пропущено</b>\n\n"
+            "⏳ Загружаю следующее задание...",
             parse_mode="HTML"
         )
+        await show_task(call.message, link, source=f"ct:{tid}", reward=reward)
         return
 
     await call.message.answer(
-        "⏭ <b>Задание пропущено</b>\n\n"
-        "⏳ Загружаю следующее задание..."
+        "🎯 <b>Все задания выполнены!</b>\n\n"
+        "💰 Пока новых нет — заходи позже\n"
+        "👥 А пока приглашай друзей и получай звёзды за рефералов",
+        parse_mode="HTML"
     )
-    link = data["tasks"][0]
-    await show_task(call.message, link)
 
 
 @dp.callback_query(F.data.startswith("task_check:"))
@@ -533,12 +571,47 @@ async def task_check(call: CallbackQuery):
     user_id = call.from_user.id
     await call.answer()
 
-    check_link = call.data.split(":", 1)[1]
+    parts = call.data.split(":", 2)
+    source = parts[1] if len(parts) > 1 else "bh"
+    extra = parts[2] if len(parts) > 2 else ""
 
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
+
+    # Свои задания
+    if source == "ct":
+        try:
+            tid = int(extra)
+        except Exception:
+            tid = 0
+        t = get_custom_task(tid)
+        if not t:
+            if msg:
+                try:
+                    await msg.edit_text("❌ Задание не найдено")
+                except Exception:
+                    pass
+            return
+        _, title, link, reward, active = t
+        # Проверка подписки через Botohub check_task
+        subscribed = await bh_check_link(user_id, link)
+        if not subscribed:
+            if msg:
+                try:
+                    await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
+                except Exception:
+                    pass
+            return
+        mark_custom_task_done(user_id, tid)
+        add_balance(user_id, reward)
+        balance = get_balance(user_id)
+        await _send_reward_and_next(call, msg, reward, balance, user_id)
+        return
+
+    # Botohub задания
+    check_link = extra
 
     data = None
     for i in range(3):
@@ -573,20 +646,23 @@ async def task_check(call: CallbackQuery):
         return
 
     reward = int(get_setting("task_reward"))
-    already = bh_reward_was_given(user_id, check_link)
-    if not already:
+    already = bh_reward_was_given(user_id, check_link) if check_link else False
+    if not already and check_link:
         add_balance(user_id, reward)
         bh_reward_mark(user_id, check_link)
-        balance = get_balance(user_id)
-        reward_text = (
-            f"✅ <b>Задание выполнено!</b>\n\n"
-            f"💰 Награда: <b>+{reward}.00</b> ⭐\n"
-            f"💎 Баланс: <b>{balance}.00</b> ⭐\n\n"
-            f"⏳ Загружаю следующее задание..."
-        )
-    else:
-        reward_text = "✅ Задание уже было засчитано ранее."
 
+    balance = get_balance(user_id)
+    await _send_reward_and_next(call, msg, reward, balance, user_id)
+
+
+async def _send_reward_and_next(call, msg, reward, balance, user_id):
+    """Показать награду и сразу выдать следующее задание."""
+    reward_text = (
+        f"✅ <b>Задание выполнено!</b>\n\n"
+        f"💰 Награда: <b>+{reward}.00</b> ⭐\n"
+        f"💎 Баланс: <b>{balance}.00</b> ⭐\n\n"
+        f"⏳ Загружаю следующее задание..."
+    )
     if msg:
         try:
             await msg.delete()
@@ -598,17 +674,44 @@ async def task_check(call: CallbackQuery):
         pass
     await call.message.answer(reward_text, parse_mode="HTML")
 
-    if data.get("completed") or data.get("skip") or not data.get("tasks"):
-        await call.message.answer(
-            "🎯 <b>Все задания выполнены!</b>\n\n"
-            "💰 Пока новых нет — заходи позже\n"
-            "👥 А пока приглашай друзей и получай звёзды за рефералов",
-            parse_mode="HTML"
-        )
+    # Ищем следующее задание
+    data = await bh_get_task(user_id, skip=False)
+    if data and not data.get("fake"):
+        tasks = data.get("tasks", [])
+        if tasks:
+            link = tasks[0]
+            await show_task(call.message, link, source="bh")
+            return
+
+    custom = get_next_custom_task(user_id)
+    if custom:
+        tid, title, link, reward = custom
+        await show_task(call.message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    link = data["tasks"][0]
-    await show_task(call.message, link)
+    await call.message.answer(
+        "🎯 <b>Все задания выполнены!</b>\n\n"
+        "💰 Пока новых нет — заходи позже\n"
+        "👥 А пока приглашай друзей и получай звёзды за рефералов",
+        parse_mode="HTML"
+    )
+
+
+async def bh_check_link(user_id, link):
+    """Проверка ссылки через Botohub /get-tasks с is_task"""
+    if not BOTOHUB_TOKEN:
+        return False
+    payload = {"chat_id": user_id, "is_task": True, "skip": False}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(BOTOHUB_TASKS_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                return bool(data.get("prev_success"))
+    except Exception as e:
+        print("bh_check_link error:", e)
+        return False
 
 
 # ============ ВЫВОД ============
@@ -760,6 +863,7 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
+# --- BOTOHUB ОП ---
 def bh_menu_text():
     enabled = bh_enabled()
     return (
@@ -872,6 +976,7 @@ async def bh_save_wd(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
 
 
+# --- ЗАДАНИЯ BOTOHUB ---
 def tasks_menu_text():
     enabled = tasks_enabled()
     return (
@@ -924,6 +1029,99 @@ async def tasks_save_reward(message: Message, state: FSMContext):
     await message.answer(f"✅ Награда: {val}.00 ⭐", reply_markup=back_admin_kb())
 
 
+# --- СВОИ ЗАДАНИЯ ---
+@dp.callback_query(F.data == "ctasks_menu")
+async def ctasks_menu(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.edit_text(
+        "📌 <b>Свои задания</b>\n\n"
+        "Добавляй задания, которые будут показываться юзерам после Botohub-заданий.",
+        reply_markup=ctasks_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ctask_add")
+async def ctask_add(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("📝 Название задания (для себя):")
+    await state.set_state(CTaskAdd.waiting_title)
+
+
+@dp.message(CTaskAdd.waiting_title)
+async def ctask_title(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.update_data(ct_title=message.text.strip())
+    await message.answer("🔗 Ссылка (https://t.me/...):")
+    await state.set_state(CTaskAdd.waiting_link)
+
+
+@dp.message(CTaskAdd.waiting_link)
+async def ctask_link(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    link = message.text.strip()
+    if not link.startswith("http"):
+        await message.answer("⚠️ Ссылка должна начинаться с http.")
+        return
+    await state.update_data(ct_link=link)
+    await message.answer("💰 Сколько звёзд за выполнение?")
+    await state.set_state(CTaskAdd.waiting_reward)
+
+
+@dp.message(CTaskAdd.waiting_reward)
+async def ctask_reward(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        reward = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    data = await state.get_data()
+    add_custom_task(data["ct_title"], data["ct_link"], reward)
+    await state.clear()
+    await message.answer("✅ Задание добавлено", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "ctask_list")
+async def ctask_list(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    rows = list_custom_tasks()
+    if not rows:
+        await call.answer("Пусто", show_alert=True)
+        return
+    text = "📜 <b>Свои задания</b>\n\n"
+    for tid, title, link, reward, active in rows:
+        text += f"#{tid} — {title} — {reward}.00 ⭐\n{link}\n\n"
+    await call.message.answer(text, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ctask_delete")
+async def ctask_delete(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("🗑 Пришли ID задания для удаления:")
+    await state.set_state(CTaskDel.waiting_id)
+
+
+@dp.message(CTaskDel.waiting_id)
+async def ctask_delete_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        tid = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    delete_custom_task(tid)
+    await state.clear()
+    await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
+
+
+# --- СВОИ ОП ---
 @dp.callback_query(F.data == "cop_menu")
 async def cop_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1014,6 +1212,7 @@ async def cop_del_id(message: Message, state: FSMContext):
     await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
 
 
+# --- БЭКАП ---
 @dp.callback_query(F.data == "backup_help")
 async def backup_help(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1041,7 +1240,8 @@ async def backup_cmd(message: Message):
                      f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
                      f"🎟 Промокодов: <b>{len(data['promos'])}</b>\n"
                      f"💸 Заявок: <b>{len(data['withdrawals'])}</b>\n"
-                     f"📌 Своих ОП: <b>{len(data['custom_ops'])}</b>"),
+                     f"📌 Своих ОП: <b>{len(data['custom_ops'])}</b>\n"
+                     f"📌 Своих заданий: <b>{len(data['custom_tasks'])}</b>"),
             parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -1075,6 +1275,7 @@ async def restore_doc(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
 
 
+# --- ЗАЯВКИ ---
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1161,6 +1362,7 @@ async def wd_history(call: CallbackQuery):
     await call.message.edit_text(text, reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
+# --- ПРИВАТКА ---
 @dp.callback_query(F.data == "priv_menu")
 async def priv_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1234,6 +1436,7 @@ async def priv_delete(call: CallbackQuery):
     await call.message.edit_text("🗑 Приватка удалена", reply_markup=back_admin_kb())
 
 
+# --- РАССЫЛКА ---
 @dp.callback_query(F.data == "broadcast")
 async def broadcast(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1281,6 +1484,7 @@ async def broadcast_confirm(call: CallbackQuery, state: FSMContext):
                                  reply_markup=back_admin_kb())
 
 
+# --- НАЧИСЛИТЬ ---
 @dp.callback_query(F.data == "give_start")
 async def give_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1324,6 +1528,7 @@ async def give_amount(message: Message, state: FSMContext):
                          reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
+# --- ЮЗЕР ---
 @dp.callback_query(F.data == "user_find")
 async def user_find(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1346,7 +1551,7 @@ async def user_show(message: Message, state: FSMContext):
     balance = u[2]
     refs = get_confirmed_refs_count(uid)
     pending = get_pending_refs_count(uid)
-    reg = (u[6] or "")[:16].replace("T", " ")
+    reg = (u[5] or "")[:16].replace("T", " ")
     await state.clear()
     await message.answer(
         f"👤 <b>Юзер</b>\n\n🧑 @{u[1] or '—'}\n🆔 <code>{uid}</code>\n"
@@ -1375,6 +1580,7 @@ async def user_refs(call: CallbackQuery):
     await call.message.answer(text, parse_mode="HTML")
 
 
+# --- ПРОМОКОДЫ ---
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1464,18 +1670,48 @@ async def promo_delete_step(message: Message, state: FSMContext):
     await message.answer(f"🗑 Удалён <code>{code}</code>", parse_mode="HTML")
 
 
+# --- СТАТИСТИКА ---
 @dp.callback_query(F.data == "stats")
 async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     s = get_stats()
-    await call.message.edit_text(
-        f"📊 <b>СТАТИСТИКА</b>\n\n👥 Всего юзеров: <b>{s['total']}</b>\n"
-        f"📅 Сегодня: <b>{s['today']}</b>\n\n📋 Заявок: <b>{s['pending']}</b>\n"
-        f"✅ Выполнено: <b>{s['done']}</b>\n💫 Выдано звёзд: <b>{s['total_stars']}</b>",
-        reply_markup=back_admin_kb(), parse_mode="HTML")
+    top_bal = get_top_balance(10)
+    top_refs = get_top_refs(10)
+
+    bal_lines = ""
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (uid, uname, bal) in enumerate(top_bal, 1):
+        prefix = medals[i - 1] if i <= 3 else f"{i}."
+        name = f"@{uname}" if uname else f"ID{uid}"
+        bal_lines += f"{prefix} {name} — <b>{bal}</b> ⭐\n"
+
+    ref_lines = ""
+    for i, (uid, uname, refs) in enumerate(top_refs, 1):
+        prefix = medals[i - 1] if i <= 3 else f"{i}."
+        name = f"@{uname}" if uname else f"ID{uid}"
+        ref_lines += f"{prefix} {name} — <b>{refs}</b> 👥\n"
+
+    text = (
+        f"📊 <b>СТАТИСТИКА</b>\n\n"
+        f"👥 Всего юзеров: <b>{s['total']}</b>\n"
+        f"📅 Новых сегодня: <b>{s['today']}</b>\n"
+        f"💰 Общий баланс: <b>{s['total_balance']}</b> ⭐\n"
+        f"👥 Подтверждённых рефералов: <b>{s['total_refs']}</b>\n\n"
+        f"📋 <b>Заявки на вывод:</b>\n"
+        f"   ⏳ В ожидании: <b>{s['pending']}</b>\n"
+        f"   ✅ Выполнено: <b>{s['done']}</b>\n"
+        f"   ❌ Отклонено: <b>{s['rejected']}</b>\n"
+        f"   💫 Выдано звёзд: <b>{s['total_stars']}</b>\n\n"
+        f"🏆 <b>Топ-10 по балансу:</b>\n{bal_lines or '   —'}\n"
+        f"👥 <b>Топ-10 по рефералам:</b>\n{ref_lines or '   —'}"
+    )
+    if len(text) > 4000:
+        text = text[:4000] + "\n...обрезано"
+    await call.message.edit_text(text, reply_markup=stats_kb(), parse_mode="HTML")
 
 
+# --- НАСТРОЙКИ ---
 @dp.callback_query(F.data == "settings")
 async def settings(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
