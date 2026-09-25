@@ -1,27 +1,18 @@
 import os
 
-# ============ НАСТРОЙКИ БОТА ============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 8742164697
-
 DB = "bot.db"
 
-# ============ BOTOHUB (ОП) ============
+# ============ BOTOHUB (ОП + Задания) ============
 BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
-BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
+BOTOHUB_URL = "https://botohub.me/get-tasks-extended"   # ОП
+BOTOHUB_TASKS_URL = "https://botohub.me/get-tasks"      # Задания
 
-# ============ FLYER (задания) ============
-FLYER_KEY = "FL-ffyAGK-DZELiT-SdQlXh-SYSdmo"
-FLYER_CHECK_URL = "https://api.flyerhubs.com/check"
-FLYER_TASKS_URL = "https://api.flyerhubs.com/get_tasks"
-FLYER_CHECK_TASK_URL = "https://api.flyerhubs.com/check_task"
-
-# ============ РЕФЕРАЛЫ ============
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
 JOIN_REQUEST_HOURS = 24
 
-# ============ ПОДАРКИ ============
 GIFTS = {
     "bear":    ("🧸 Мишка",   15),
     "heart":   ("❤️ Сердце",  15),
@@ -35,17 +26,12 @@ GIFTS = {
 
 GIFTS_ORDER = ["bear", "heart", "gift", "rose", "cake", "rocket", "ring", "diamond"]
 
-# ============ ДЕФОЛТНЫЕ НАСТРОЙКИ ============
 DEFAULTS = {
-    # Экономика
     "ref_bonus": "35",
     "daily_bonus": "1",
     "min_withdraw": "15",
-
-    # Меню
     "welcome_text": "Главное меню 👇",
 
-    # Приватка
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
     "priv_buttons": (
@@ -63,7 +49,7 @@ DEFAULTS = {
     ),
     "botohub_btn_text": "📢 Спонсор",
 
-    # Flyer — задания
-    "flyer_enabled": "1",
-    "flyer_task_reward": "10",
+    # Botohub — Задания
+    "tasks_enabled": "1",
+    "task_reward": "10",
 }
