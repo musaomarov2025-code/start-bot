@@ -129,9 +129,25 @@ async def flyer_get_tasks(user_id):
             async with s.post(FLYER_TASKS_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
+                # ОТЛАДКА
+                try:
+                    await bot.send_message(ADMIN_ID,
+                        f"🔍 <b>Flyer get_tasks</b>\n\n"
+                        f"URL: <code>{FLYER_TASKS_URL}</code>\n"
+                        f"Payload: <code>{payload}</code>\n\n"
+                        f"Ответ:\n<code>{str(data)[:900]}</code>",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
                 return data.get("tasks", data.get("sponsors", []))
     except Exception as e:
         print("Flyer get_tasks error:", e)
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"❌ <b>Flyer get_tasks error</b>\n<code>{e}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return []
 
 
@@ -145,6 +161,15 @@ async def flyer_check_task(signature):
             async with s.post(FLYER_CHECK_TASK_URL, json=payload,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
+                # ОТЛАДКА
+                try:
+                    await bot.send_message(ADMIN_ID,
+                        f"🔍 <b>Flyer check_task</b>\n\n"
+                        f"Payload: <code>{payload}</code>\n\n"
+                        f"Ответ:\n<code>{str(data)[:500]}</code>",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
                 result = data.get("result")
                 return result in ("completed", "subscribed", "ok", "success", True, "done")
     except Exception as e:
