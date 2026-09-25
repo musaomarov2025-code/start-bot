@@ -55,21 +55,23 @@ def task_kb(link):
     ])
 
 
+# ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
          InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
         [InlineKeyboardButton(text="📜 История", callback_data="wd_history"),
          InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu")],
-        [InlineKeyboardButton(text="🎯 Задания", callback_data="tasks_menu"),
-         InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu")],
+        [InlineKeyboardButton(text="🎯 Задания Botohub", callback_data="tasks_menu"),
+         InlineKeyboardButton(text="📌 Свои задания", callback_data="ctasks_menu")],
+        [InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu"),
+         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
         [InlineKeyboardButton(text="💸 Начислить", callback_data="give_start"),
          InlineKeyboardButton(text="👥 Юзер", callback_data="user_find")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-        [InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+         InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
 
 
@@ -90,6 +92,15 @@ def tasks_kb(enabled):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Награда за задание", callback_data="tasks_edit_reward")],
         [InlineKeyboardButton(text=status, callback_data="tasks_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def ctasks_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="ctask_add")],
+        [InlineKeyboardButton(text="📜 Список", callback_data="ctask_list")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data="ctask_delete")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
@@ -165,5 +176,12 @@ def user_view_kb(uid):
 
 def back_admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def stats_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
