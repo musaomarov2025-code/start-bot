@@ -6,7 +6,6 @@ from aiogram.types import (
 from config import GIFTS, GIFTS_ORDER
 
 
-# ============ ПОЛЬЗОВАТЕЛЬСКИЕ ============
 def main_menu():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="⭐ Заработать звёзды")],
@@ -55,14 +54,13 @@ def task_kb(link):
     ])
 
 
-# ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
          InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
         [InlineKeyboardButton(text="📜 История", callback_data="wd_history"),
          InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu")],
-        [InlineKeyboardButton(text="🎯 Flyer задания", callback_data="fly_menu"),
+        [InlineKeyboardButton(text="🎯 Задания", callback_data="tasks_menu"),
          InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
@@ -86,17 +84,16 @@ def bh_kb(enabled):
     ])
 
 
-def fly_kb(enabled):
+def tasks_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Награда за задание", callback_data="fly_edit_reward")],
-        [InlineKeyboardButton(text=status, callback_data="fly_toggle")],
+        [InlineKeyboardButton(text="💰 Награда за задание", callback_data="tasks_edit_reward")],
+        [InlineKeyboardButton(text=status, callback_data="tasks_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
 def cop_kb(op_type):
-    """op_type: 'entry' или 'withdraw'"""
     title = "входе" if op_type == "entry" else "выводе"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"➕ Добавить (на {title})", callback_data=f"cop_add:{op_type}")],
