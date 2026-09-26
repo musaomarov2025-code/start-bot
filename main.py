@@ -425,29 +425,33 @@ async def earn(message: Message):
 
 
 # ============ ПРОФИЛЬ ============
-async def _render_profile(call: CallbackQuery):
-    u = get_user(call.from_user.id)
-    if not u:
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-        return
-    balance = u[2]
-    name = call.from_user.first_name or "друг"
-    refs = get_confirmed_refs_count(call.from_user.id)
-    pending = get_pending_refs_count(call.from_user.id)
-    place = get_place(call.from_user.id)
-    text = (
+def _profile_text(uid: int, first_name: str) -> str:
+    u = get_user(uid)
+    balance = u[2] if u else 0
+    name = first_name or "друг"
+    refs = get_confirmed_refs_count(uid)
+    pending = get_pending_refs_count(uid)
+    place = get_place(uid)
+    return (
         f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
         f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
-        f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{call.from_user.id}</code>\n\n'
+        f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{uid}</code>\n\n'
         f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
         f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Друзей: <b>{refs}</b>\n'
         f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> Ожидают: <b>{pending}</b>\n'
         f'<tg-emoji emoji-id="5474419165781597383">🏆</tg-emoji> Место в топе: <b>#{place}</b>\n\n'
         f'<tg-emoji emoji-id="5231102735817918643">👇</tg-emoji> Забирай бонусы и промокоды'
     )
+
+
+async def _render_profile(call: CallbackQuery):
+    if not get_user(call.from_user.id):
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        return
+    text = _profile_text(call.from_user.id, call.from_user.first_name)
     try:
         await call.message.edit_text(text, reply_markup=profile_kb(), parse_mode="HTML")
     except Exception:
@@ -456,26 +460,11 @@ async def _render_profile(call: CallbackQuery):
 
 @dp.message(F.text == "Профиль")
 async def profile(message: Message):
-    u = get_user(message.from_user.id)
-    if not u:
+    if not get_user(message.from_user.id):
         await message.answer("Напиши /start")
         return
-    balance = u[2]
-    name = message.from_user.first_name or "друг"
-    refs = get_confirmed_refs_count(message.from_user.id)
-    pending = get_pending_refs_count(message.from_user.id)
-    place = get_place(message.from_user.id)
-    await message.answer(
-        f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
-        f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
-        f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{message.from_user.id}</code>\n\n'
-        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
-        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Друзей: <b>{refs}</b>\n'
-        f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> Ожидают: <b>{pending}</b>\n'
-        f'<tg-emoji emoji-id="5474419165781597383">🏆</tg-emoji> Место в топе: <b>#{place}</b>\n\n'
-        f'<tg-emoji emoji-id="5231102735817918643">👇</tg-emoji> Забирай бонусы и промокоды',
-        reply_markup=profile_kb(), parse_mode="HTML"
-    )
+    text = _profile_text(message.from_user.id, message.from_user.first_name)
+    await message.answer(text, reply_markup=profile_kb(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "daily_bonus")
@@ -603,6 +592,15 @@ async def show_task(message, link, source="bh", reward=None):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+async def _no_tasks_left(message):
+    await message.answer(
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> '
+        f'А пока приглашай друзей и получай звёзды за рефералов',
+        parse_mode="HTML")
+
+
 @dp.message(F.text == "Задания")
 async def tasks_menu(message: Message):
     if not tasks_enabled():
@@ -628,12 +626,7 @@ async def tasks_menu(message: Message):
         await show_task(message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    await message.answer(
-        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
-        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
-        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> '
-        f'А пока приглашай друзей и получай звёзды за рефералов',
-        parse_mode="HTML")
+    await _no_tasks_left(message)
 
 
 @dp.callback_query(F.data == "task_skip")
@@ -672,12 +665,7 @@ async def task_skip(call: CallbackQuery):
         await show_task(call.message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    await call.message.answer(
-        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
-        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
-        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> '
-        f'А пока приглашай друзей и получай звёзды за рефералов',
-        parse_mode="HTML")
+    await _no_tasks_left(call.message)
 
 
 async def _send_reward_and_next(call, msg, reward, balance, user_id):
@@ -713,12 +701,7 @@ async def _send_reward_and_next(call, msg, reward, balance, user_id):
         await show_task(call.message, link, source=f"ct:{tid}", reward=reward2)
         return
 
-    await call.message.answer(
-        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
-        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
-        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> '
-        f'А пока приглашай друзей и получай звёзды за рефералов',
-        parse_mode="HTML")
+    await _no_tasks_left(call.message)
 
 
 @dp.callback_query(F.data.startswith("tc:"))
@@ -911,13 +894,26 @@ async def create_order(call: CallbackQuery, key):
     text = (
         f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Заявка #{wid} создана!</b>\n\n'
         f'<tg-emoji emoji-id="5449800250032143374">🎁</tg-emoji> Подарок: '
-        f'<tg-emoji emoji-id="{gift_emoji_id}">{name[0]}</tg-emoji> {name}\n'
+        f'<tg-emoji emoji-id="{gift_emoji_id}">🎁</tg-emoji> {name}\n'
         f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Сумма: {price} '
         f'<tg-emoji emoji-id="5386367538735104399">⭐</tg-emoji>\n'
         f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
     )
 
-    await bot.send_message(call.from_user.id, text, parse_mode="HTML")
+    try:
+        await bot.send_message(call.from_user.id, text, parse_mode="HTML")
+    except Exception as e:
+        print("Ошибка отправки юзеру:", e)
+        try:
+            await bot.send_message(
+                call.from_user.id,
+                f"✅ Заявка #{wid} создана!\n\n"
+                f"🎁 Подарок: {name}\n"
+                f"💰 Сумма: {price} ⭐\n"
+                f"⌛ Ожидай — админ отправит подарок вручную."
+            )
+        except Exception as e2:
+            print("Ошибка отправки юзеру (fallback):", e2)
 
     try:
         await bot.send_message(ADMIN_ID,
@@ -926,7 +922,7 @@ async def create_order(call: CallbackQuery, key):
             reply_markup=admin_wd_kb(wid), parse_mode="HTML")
     except Exception as e:
         print("Ошибка отправки админу:", e)
-      # ================== АДМИНКА ==================
+        # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -1181,6 +1177,8 @@ async def ctask_list(call: CallbackQuery):
     text = "📜 <b>Свои задания</b>\n\n"
     for tid, title, link, reward, active in rows:
         text += f"#{tid} — {title} — {reward}.00 ⭐\n{link}\n\n"
+    if len(text) > 4000:
+        text = text[:4000] + "\n...обрезано"
     await call.message.answer(text, parse_mode="HTML")
 
 
@@ -1272,6 +1270,8 @@ async def cop_list(call: CallbackQuery):
     text = "📜 <b>Свои ОП</b>\n\n"
     for cid, title, link in rows:
         text += f"#{cid} — {title}\n{link}\n\n"
+    if len(text) > 4000:
+        text = text[:4000] + "\n...обрезано"
     await call.message.answer(text, parse_mode="HTML")
 
 
