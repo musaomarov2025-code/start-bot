@@ -6,99 +6,20 @@ from config import DB, DEFAULTS, REFERRAL_DAYS, JOIN_REQUEST_HOURS
 def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            balance INTEGER DEFAULT 0,
-            last_bonus TEXT,
-            referrer_id INTEGER,
-            registered_at TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS referrals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            referrer_id INTEGER,
-            created_at TEXT,
-            reminded INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'pending'
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount INTEGER,
-            gift TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS promos (
-            code TEXT PRIMARY KEY,
-            amount INTEGER,
-            max_uses INTEGER,
-            used INTEGER DEFAULT 0,
-            active INTEGER DEFAULT 1
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS promo_uses (
-            code TEXT,
-            user_id INTEGER,
-            used_at TEXT,
-            PRIMARY KEY (code, user_id)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS custom_ops (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            link TEXT,
-            type TEXT,
-            active INTEGER DEFAULT 1
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bh_rewards (
-            user_id INTEGER,
-            link TEXT,
-            done_at TEXT,
-            PRIMARY KEY (user_id, link)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS custom_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            link TEXT,
-            reward INTEGER DEFAULT 10,
-            active INTEGER DEFAULT 1
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS custom_tasks_done (
-            user_id INTEGER,
-            task_id INTEGER,
-            done_at TEXT,
-            PRIMARY KEY (user_id, task_id)
-        )
-    """)
+    cur.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0, last_bonus TEXT, referrer_id INTEGER, registered_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS referrals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, referrer_id INTEGER, created_at TEXT, reminded INTEGER DEFAULT 0, status TEXT DEFAULT 'pending')""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS withdrawals (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount INTEGER, gift TEXT, status TEXT DEFAULT 'pending', created_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS promos (code TEXT PRIMARY KEY, amount INTEGER, max_uses INTEGER, used INTEGER DEFAULT 0, active INTEGER DEFAULT 1)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS promo_uses (code TEXT, user_id INTEGER, used_at TEXT, PRIMARY KEY (code, user_id))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS custom_ops (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, type TEXT, active INTEGER DEFAULT 1)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS bh_rewards (user_id INTEGER, link TEXT, done_at TEXT, PRIMARY KEY (user_id, link))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, reward INTEGER DEFAULT 10, active INTEGER DEFAULT 1)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks_done (user_id INTEGER, task_id INTEGER, done_at TEXT, PRIMARY KEY (user_id, task_id))""")
     conn.commit()
     conn.close()
 
 
-# ============ НАСТРОЙКИ ============
 def get_setting(key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -116,7 +37,6 @@ def set_setting(key, value):
     conn.close()
 
 
-# ============ ПОЛЬЗОВАТЕЛИ ============
 def get_user(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -131,10 +51,8 @@ def add_user(user_id, username, referrer_id=None):
         return False
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO users (user_id, username, referrer_id, registered_at) VALUES (?, ?, ?, ?)",
-        (user_id, username, referrer_id, datetime.now().isoformat())
-    )
+    cur.execute("INSERT INTO users (user_id, username, referrer_id, registered_at) VALUES (?, ?, ?, ?)",
+                (user_id, username, referrer_id, datetime.now().isoformat()))
     conn.commit()
     conn.close()
     return True
@@ -168,10 +86,7 @@ def get_balance(user_id):
 def get_place(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) FROM users WHERE balance > (SELECT balance FROM users WHERE user_id = ?)",
-        (user_id,)
-    )
+    cur.execute("SELECT COUNT(*) FROM users WHERE balance > (SELECT balance FROM users WHERE user_id = ?)", (user_id,))
     place = cur.fetchone()[0] + 1
     conn.close()
     return place
@@ -192,10 +107,7 @@ def can_take_bonus(user_id):
 def set_bonus_taken(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "UPDATE users SET last_bonus = ? WHERE user_id = ?",
-        (datetime.now().isoformat(), user_id)
-    )
+    cur.execute("UPDATE users SET last_bonus = ? WHERE user_id = ?", (datetime.now().isoformat(), user_id))
     conn.commit()
     conn.close()
 
@@ -209,14 +121,11 @@ def get_all_user_ids():
     return [r[0] for r in rows]
 
 
-# ============ РЕФЕРАЛЫ ============
 def create_pending_referral(user_id, referrer_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO referrals (user_id, referrer_id, created_at, status) VALUES (?, ?, ?, 'pending')",
-        (user_id, referrer_id, datetime.now().isoformat())
-    )
+    cur.execute("INSERT INTO referrals (user_id, referrer_id, created_at, status) VALUES (?, ?, ?, 'pending')",
+                (user_id, referrer_id, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -224,10 +133,7 @@ def create_pending_referral(user_id, referrer_id):
 def get_pending_refs_count(referrer_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND status = 'pending'",
-        (referrer_id,)
-    )
+    cur.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND status = 'pending'", (referrer_id,))
     n = cur.fetchone()[0]
     conn.close()
     return n
@@ -236,10 +142,7 @@ def get_pending_refs_count(referrer_id):
 def get_confirmed_refs_count(referrer_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND status = 'confirmed'",
-        (referrer_id,)
-    )
+    cur.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND status = 'confirmed'", (referrer_id,))
     n = cur.fetchone()[0]
     conn.close()
     return n
@@ -248,12 +151,8 @@ def get_confirmed_refs_count(referrer_id):
 def get_user_referrals(referrer_id, limit=100):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT r.user_id, u.username, r.created_at, r.status "
-        "FROM referrals r LEFT JOIN users u ON u.user_id = r.user_id "
-        "WHERE r.referrer_id = ? ORDER BY r.created_at DESC LIMIT ?",
-        (referrer_id, limit)
-    )
+    cur.execute("SELECT r.user_id, u.username, r.created_at, r.status FROM referrals r LEFT JOIN users u ON u.user_id = r.user_id WHERE r.referrer_id = ? ORDER BY r.created_at DESC LIMIT ?",
+                (referrer_id, limit))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -262,10 +161,7 @@ def get_user_referrals(referrer_id, limit=100):
 def confirm_referral(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, referrer_id FROM referrals WHERE user_id = ? AND status = 'pending' ORDER BY id LIMIT 1",
-        (user_id,)
-    )
+    cur.execute("SELECT id, referrer_id FROM referrals WHERE user_id = ? AND status = 'pending' ORDER BY id LIMIT 1", (user_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -281,10 +177,7 @@ def expire_old_referrals():
     threshold = (datetime.now() - timedelta(days=REFERRAL_DAYS)).isoformat()
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, user_id, referrer_id FROM referrals WHERE status = 'pending' AND created_at < ?",
-        (threshold,)
-    )
+    cur.execute("SELECT id, user_id, referrer_id FROM referrals WHERE status = 'pending' AND created_at < ?", (threshold,))
     rows = cur.fetchall()
     for rid, _, _ in rows:
         cur.execute("UPDATE referrals SET status = 'expired' WHERE id = ?", (rid,))
@@ -298,10 +191,7 @@ def get_refs_to_remind():
     threshold = (datetime.now() - timedelta(minutes=REFERRAL_REMIND_MIN)).isoformat()
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, user_id, referrer_id FROM referrals WHERE status = 'pending' AND reminded = 0 AND created_at < ?",
-        (threshold,)
-    )
+    cur.execute("SELECT id, user_id, referrer_id FROM referrals WHERE status = 'pending' AND reminded = 0 AND created_at < ?", (threshold,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -315,14 +205,11 @@ def mark_reminded(rid):
     conn.close()
 
 
-# ============ ВЫВОДЫ ============
 def create_withdrawal(user_id, amount, gift):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO withdrawals (user_id, amount, gift, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, amount, gift, datetime.now().isoformat())
-    )
+    cur.execute("INSERT INTO withdrawals (user_id, amount, gift, created_at) VALUES (?, ?, ?, ?)",
+                (user_id, amount, gift, datetime.now().isoformat()))
     wid = cur.lastrowid
     cur.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
@@ -351,11 +238,7 @@ def get_pending_withdrawals():
 def get_withdrawal_history(limit=50):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, user_id, amount, gift, status, created_at FROM withdrawals "
-        "WHERE status != 'pending' ORDER BY id DESC LIMIT ?",
-        (limit,)
-    )
+    cur.execute("SELECT id, user_id, amount, gift, status, created_at FROM withdrawals WHERE status != 'pending' ORDER BY id DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -369,7 +252,6 @@ def set_withdrawal_status(wid, status):
     conn.close()
 
 
-# ============ СТАТИСТИКА ============
 def get_stats():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -390,25 +272,15 @@ def get_stats():
     cur.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'completed'")
     total_stars = cur.fetchone()[0]
     conn.close()
-    return {
-        "total": total,
-        "today": today,
-        "total_balance": total_balance,
-        "total_refs": total_refs,
-        "pending": pending,
-        "done": done,
-        "rejected": rejected,
-        "total_stars": total_stars,
-    }
+    return {"total": total, "today": today, "total_balance": total_balance,
+            "total_refs": total_refs, "pending": pending, "done": done,
+            "rejected": rejected, "total_stars": total_stars}
 
 
 def get_top_balance(limit=10):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT ?",
-        (limit,)
-    )
+    cur.execute("SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -417,28 +289,17 @@ def get_top_balance(limit=10):
 def get_top_refs(limit=10):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("""
-        SELECT u.user_id, u.username, COUNT(r.id) as refs
-        FROM users u
-        LEFT JOIN referrals r ON r.referrer_id = u.user_id AND r.status = 'confirmed'
-        GROUP BY u.user_id
-        HAVING refs > 0
-        ORDER BY refs DESC
-        LIMIT ?
-    """, (limit,))
+    cur.execute("""SELECT u.user_id, u.username, COUNT(r.id) as refs FROM users u LEFT JOIN referrals r ON r.referrer_id = u.user_id AND r.status = 'confirmed' GROUP BY u.user_id HAVING refs > 0 ORDER BY refs DESC LIMIT ?""", (limit,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-# ============ ПРОМОКОДЫ ============
 def create_promo(code, amount, max_uses):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active) VALUES (?, ?, ?, 0, 1)",
-        (code.upper(), amount, max_uses)
-    )
+    cur.execute("INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active) VALUES (?, ?, ?, 0, 1)",
+                (code.upper(), amount, max_uses))
     conn.commit()
     conn.close()
 
@@ -491,13 +352,10 @@ def activate_promo(code, user_id):
         return False, "❌ Промокод больше не действует.", 0
     if user_used_promo(code, user_id):
         return False, "❌ Ты уже активировал этот промокод.", 0
-
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO promo_uses (code, user_id, used_at) VALUES (?, ?, ?)",
-        (code, user_id, datetime.now().isoformat())
-    )
+    cur.execute("INSERT INTO promo_uses (code, user_id, used_at) VALUES (?, ?, ?)",
+                (code, user_id, datetime.now().isoformat()))
     cur.execute("UPDATE promos SET used = used + 1 WHERE code = ?", (code,))
     cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
@@ -505,14 +363,10 @@ def activate_promo(code, user_id):
     return True, f"✅ Промокод активирован! +{amount} ⭐", amount
 
 
-# ============ СВОИ ОП ============
 def add_custom_op(title, link, op_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO custom_ops (title, link, type, active) VALUES (?, ?, ?, 1)",
-        (title, link, op_type)
-    )
+    cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?, ?, ?, 1)", (title, link, op_type))
     conn.commit()
     conn.close()
 
@@ -520,10 +374,7 @@ def add_custom_op(title, link, op_type):
 def list_custom_ops(op_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, title, link FROM custom_ops WHERE type = ? AND active = 1 ORDER BY id",
-        (op_type,)
-    )
+    cur.execute("SELECT id, title, link FROM custom_ops WHERE type = ? AND active = 1 ORDER BY id", (op_type,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -537,14 +388,11 @@ def delete_custom_op(op_id):
     conn.close()
 
 
-# ============ BOTOHUB НАГРАДЫ ============
 def bh_reward_mark(user_id, link):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO bh_rewards (user_id, link, done_at) VALUES (?, ?, ?)",
-        (user_id, link, datetime.now().isoformat())
-    )
+    cur.execute("INSERT OR IGNORE INTO bh_rewards (user_id, link, done_at) VALUES (?, ?, ?)",
+                (user_id, link, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -558,14 +406,10 @@ def bh_reward_was_given(user_id, link):
     return row is not None
 
 
-# ============ СВОИ ЗАДАНИЯ ============
 def add_custom_task(title, link, reward):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)",
-        (title, link, reward)
-    )
+    cur.execute("INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)", (title, link, reward))
     conn.commit()
     conn.close()
 
@@ -600,12 +444,7 @@ def delete_custom_task(task_id):
 def get_next_custom_task(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("""
-        SELECT id, title, link, reward FROM custom_tasks
-        WHERE active = 1 AND id NOT IN (
-            SELECT task_id FROM custom_tasks_done WHERE user_id = ?
-        ) ORDER BY id LIMIT 1
-    """, (user_id,))
+    cur.execute("""SELECT id, title, link, reward FROM custom_tasks WHERE active = 1 AND id NOT IN (SELECT task_id FROM custom_tasks_done WHERE user_id = ?) ORDER BY id LIMIT 1""", (user_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -614,9 +453,7 @@ def get_next_custom_task(user_id):
 def mark_custom_task_done(user_id, task_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO custom_tasks_done (user_id, task_id, done_at) VALUES (?, ?, ?)",
-        (user_id, task_id, datetime.now().isoformat())
-    )
+    cur.execute("INSERT OR IGNORE INTO custom_tasks_done (user_id, task_id, done_at) VALUES (?, ?, ?)",
+                (user_id, task_id, datetime.now().isoformat()))
     conn.commit()
     conn.close()
