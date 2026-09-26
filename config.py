@@ -4,7 +4,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 8742164697
 DB = "bot.db"
 
-# ============ BOTOHUB (ОП + Задания) ============
 BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
 BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
 BOTOHUB_TASKS_URL = "https://botohub.me/get-tasks"
@@ -42,14 +41,12 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
-
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
     "priv_buttons": (
         "👦 Я парень - https://t.me/RuletkaMatchBot?start=savikpriv2509\n"
         "👧 Я девушка - https://t.me/RuletkaMatchBot?start=savikpriv2509"
     ),
-
     "botohub_enabled": "1",
     "botohub_entry_count": "6",
     "botohub_withdraw_count": "6",
@@ -59,7 +56,6 @@ DEFAULTS = {
         '"<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> Я Подписался"'
     ),
     "botohub_btn_text": "Подписаться",
-
     "tasks_enabled": "1",
     "task_reward": "1",
 }
