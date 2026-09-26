@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 import aiohttp
@@ -16,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 from config import (
-    BOT_TOKEN, ADMIN_ID, GIFTS, REFERRAL_DAYS, DB,
+    BOT_TOKEN, ADMIN_ID, GIFTS, GIFTS_EMOJI, REFERRAL_DAYS, DB,
     BOTOHUB_TOKEN, BOTOHUB_URL, BOTOHUB_TASKS_URL,
 )
 from database import (
@@ -39,6 +39,7 @@ from database import (
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
+    daily_bonus_kb, daily_back_kb, promo_cancel_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
     bh_kb, tasks_kb, ctasks_kb, cop_kb, cop_type_kb, stats_kb,
@@ -50,7 +51,6 @@ dp = Dispatcher()
 BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 
-# ============ СОСТОЯНИЯ ============
 class PromoCreate(StatesGroup):
     waiting_code = State()
     waiting_amount = State()
@@ -104,7 +104,7 @@ class CopDel(StatesGroup):
     waiting_id = State()
 
 
-# ============ BOTOHUB — ОП ============
+# ============ BOTOHUB ОП ============
 def bh_enabled():
     return get_setting("botohub_enabled") == "1"
 
@@ -124,7 +124,7 @@ async def bh_get_tasks(chat_id, count):
         return {"tasks": [], "completed": True, "skip": True}
 
 
-# ============ BOTOHUB — ЗАДАНИЯ ============
+# ============ BOTOHUB ЗАДАНИЯ ============
 def tasks_enabled():
     return get_setting("tasks_enabled") == "1"
 
@@ -142,6 +142,22 @@ async def bh_get_task(chat_id, skip=False):
     except Exception as e:
         print("Botohub tasks error:", e)
         return None
+
+
+async def bh_check_link(user_id):
+    if not BOTOHUB_TOKEN:
+        return False
+    payload = {"chat_id": user_id, "is_task": True, "skip": False}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(BOTOHUB_TASKS_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                return bool(data.get("prev_success"))
+    except Exception as e:
+        print("bh_check_link error:", e)
+        return False
 
 
 # ============ БЭКАП ============
@@ -171,12 +187,10 @@ def export_users_to_json():
     custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4]}
                     for r in cur.fetchall()]
     conn.close()
-    return {
-        "exported_at": datetime.now().isoformat(),
-        "users": users, "referrals": referrals, "promos": promos,
-        "withdrawals": withdrawals, "settings": settings,
-        "custom_ops": custom_ops, "custom_tasks": custom_tasks,
-    }
+    return {"exported_at": datetime.now().isoformat(),
+            "users": users, "referrals": referrals, "promos": promos,
+            "withdrawals": withdrawals, "settings": settings,
+            "custom_ops": custom_ops, "custom_tasks": custom_tasks}
 
 
 def import_users_from_json(data):
@@ -185,12 +199,9 @@ def import_users_from_json(data):
     cur = conn.cursor()
     count = 0
     for u in data.get("users", []):
-        cur.execute("""
-            INSERT OR REPLACE INTO users
-            (user_id, username, balance, last_bonus, referrer_id, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (u["user_id"], u.get("username"), u.get("balance", 0),
-              u.get("last_bonus"), u.get("referrer_id"), u.get("registered_at")))
+        cur.execute("INSERT OR REPLACE INTO users (user_id, username, balance, last_bonus, referrer_id, registered_at) VALUES (?,?,?,?,?,?)",
+                    (u["user_id"], u.get("username"), u.get("balance", 0),
+                     u.get("last_bonus"), u.get("referrer_id"), u.get("registered_at")))
         count += 1
     cur.execute("DELETE FROM referrals")
     for r in data.get("referrals", []):
@@ -216,7 +227,6 @@ def import_users_from_json(data):
     return count
 
 
-# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -254,10 +264,13 @@ async def show_op_screen(message, user_id, op_type, cb_data_confirm):
     buttons = []
     row = []
     btn_text = get_setting("botohub_btn_text")
+    EMOJI_SUB = "5253742260054409879"
+    EMOJI_OK = "6026257381678124710"
 
     customs = list_custom_ops(op_type)
     for i, (cid, title, link) in enumerate(customs, 1):
-        row.append(InlineKeyboardButton(text=f"{btn_text} {i}", url=link))
+        row.append(InlineKeyboardButton(
+            text=f"{btn_text} {i}", url=link, icon_custom_emoji_id=EMOJI_SUB))
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -268,16 +281,16 @@ async def show_op_screen(message, user_id, op_type, cb_data_confirm):
         link = t.get("url")
         if not link:
             continue
-        completed = t.get("completed", False)
-        label = f"✅ {btn_text} {i + len(customs)}" if completed else f"{btn_text} {i + len(customs)}"
-        row.append(InlineKeyboardButton(text=label, url=link))
+        row.append(InlineKeyboardButton(
+            text=f"{btn_text} {i + len(customs)}", url=link, icon_custom_emoji_id=EMOJI_SUB))
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
 
-    buttons.append([InlineKeyboardButton(text="✅ Я подписался", callback_data=cb_data_confirm)])
+    buttons.append([InlineKeyboardButton(
+        text="Я подписался", callback_data=cb_data_confirm, icon_custom_emoji_id=EMOJI_OK)])
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     text = get_setting("botohub_text")
@@ -304,8 +317,9 @@ async def start(message: Message, state: FSMContext):
         create_pending_referral(message.from_user.id, referrer)
         try:
             await bot.send_message(referrer,
-                "🎉 По твоей ссылке зашёл новый друг!\n"
-                "Он должен зайти в профиль и забрать бонус — тогда ты получишь звёзды.")
+                '<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> <b>По твоей ссылке зашёл новый друг!</b>\n\n'
+                'Он должен зайти в профиль и забрать бонус — тогда ты получишь звёзды.',
+                parse_mode="HTML")
         except Exception:
             pass
 
@@ -374,12 +388,11 @@ async def bh_entry_check(call: CallbackQuery):
         await call.message.delete()
     except Exception:
         pass
-    welcome = get_setting("welcome_text")
-    await call.message.answer(welcome, reply_markup=main_menu())
+    await call.message.answer(get_setting("welcome_text"), reply_markup=main_menu())
 
 
 # ============ ЗАРАБОТАТЬ ============
-@dp.message(F.text == "⭐ Заработать звёзды")
+@dp.message(F.text == "Заработать звёзды")
 async def earn(message: Message):
     me = await bot.get_me()
     ref_bonus = get_setting("ref_bonus")
@@ -388,24 +401,28 @@ async def earn(message: Message):
     share_text = "Заходи в бота, тут раздают звёзды ⭐"
     share_url = (f"https://t.me/share/url?url={quote(ref_link, safe='')}"
                  f"&text={quote(share_text, safe='')}")
+
     text = (
-        f"Приглашай пользователей в бота и получай по <b>{ref_bonus}</b> 🌟 "
-        f"как только они подпишутся на каналы!\n\n"
-        f"🔗 <b>Ваша ссылка:</b>\n{ref_link}\n\n"
-        f"<blockquote>"
-        f"❓ <b>Как использовать реферальную ссылку?</b>\n"
-        f"• Отправь её друзьям в личные сообщения 👥\n"
-        f"• Поделись ссылкой в своём Telegram-канале 📢\n"
-        f"• Оставь её в комментариях или чатах 💬\n"
-        f"• Распространяй ссылку в соцсетях: TikTok, Instagram, WhatsApp и других 🌐"
-        f"</blockquote>\n\n"
-        f"👥 Вы пригласили: <b>{refs}</b>"
+        f'Приглашай пользователей в бота и получай по {ref_bonus} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji> '
+        f'как только они подпишутся на каналы!\n\n'
+        f'<tg-emoji emoji-id="5260730055880876557">⛓</tg-emoji><b>Ваша ссылка:</b>\n'
+        f'{ref_link}\n\n'
+        f'<blockquote>'
+        f'<tg-emoji emoji-id="5361948905900635660">❓</tg-emoji> <b>Как использовать реферальную ссылку?</b>\n'
+        f'• Отправь её друзьям в личные сообщения <tg-emoji emoji-id="5258513401784573443">👥</tg-emoji>\n'
+        f'• Поделись ссылкой в своём Telegram-канале <tg-emoji emoji-id="5258236805890710909">⬅️</tg-emoji>\n'
+        f'• Оставь её в комментариях или чатах <tg-emoji emoji-id="5258215850745275216">➡️</tg-emoji>\n'
+        f'• Распространяй ссылку в соцсетях: TikTok, Instagram, WhatsApp и других '
+        f'<tg-emoji emoji-id="5258057130228849960">✅</tg-emoji>'
+        f'</blockquote>\n\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Вы пригласили: <b>{refs}</b>'
     )
     await message.answer(text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
 
 # ============ ПРОФИЛЬ ============
-@dp.message(F.text == "👤 Профиль")
+@dp.message(F.text == "Профиль")
 async def profile(message: Message):
     u = get_user(message.from_user.id)
     if not u:
@@ -417,49 +434,124 @@ async def profile(message: Message):
     pending = get_pending_refs_count(message.from_user.id)
     place = get_place(message.from_user.id)
     await message.answer(
-        f"👤 <b>ПРОФИЛЬ</b>\n\n"
-        f"🧑 {name}\n"
-        f"🆔 <code>{message.from_user.id}</code>\n\n"
-        f"⭐ Баланс: <b>{balance}.00</b>\n"
-        f"👥 Друзей: <b>{refs}</b>\n"
-        f"⏳ Ожидают: <b>{pending}</b>\n"
-        f"🏆 Место в топе: <b>#{place}</b>\n\n"
-        f"👇 Забирай бонусы и промокоды",
+        f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
+        f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
+        f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{message.from_user.id}</code>\n\n'
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Друзей: <b>{refs}</b>\n'
+        f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> Ожидают: <b>{pending}</b>\n'
+        f'<tg-emoji emoji-id="5474419165781597383">🏆</tg-emoji> Место в топе: <b>#{place}</b>\n\n'
+        f'<tg-emoji emoji-id="5231102735817918643">👇</tg-emoji> Забирай бонусы и промокоды',
         reply_markup=profile_kb(), parse_mode="HTML"
     )
 
 
 @dp.callback_query(F.data == "daily_bonus")
 async def cb_daily_bonus(call: CallbackQuery):
+    balance = get_balance(call.from_user.id)
     if not can_take_bonus(call.from_user.id):
-        await call.answer("⏳ Уже забирал сегодня. Возвращайся через 24 часа!", show_alert=True)
+        await call.message.edit_text(
+            f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневные бонусы</b>\n\n'
+            f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> Бонус уже получен сегодня!\n\n'
+            f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {balance} '
+            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>',
+            reply_markup=daily_back_kb(), parse_mode="HTML")
+        return
+    await call.message.edit_text(
+        f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневные бонусы</b>\n\n'
+        f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> Собирай ежедневный бонус каждый день!\n\n'
+        f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {balance} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>',
+        reply_markup=daily_bonus_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "daily_claim")
+async def daily_claim(call: CallbackQuery):
+    if not can_take_bonus(call.from_user.id):
+        await call.answer("⏳ Уже забирал сегодня!", show_alert=True)
         return
     amount = int(get_setting("daily_bonus"))
     add_balance(call.from_user.id, amount)
     set_bonus_taken(call.from_user.id)
     balance = get_balance(call.from_user.id)
+
     referrer = confirm_referral(call.from_user.id)
     if referrer:
         ref_bonus = int(get_setting("ref_bonus"))
         add_balance(referrer, ref_bonus)
         try:
             await bot.send_message(referrer,
-                f"🎉 Друг подтвердил реферал!\n💫 Тебе начислено +{ref_bonus} ⭐")
+                f'<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> <b>Друг подтвердил реферал!</b>\n\n'
+                f'<tg-emoji emoji-id="5469744063815102906">💫</tg-emoji> Тебе начислено <b>+{ref_bonus}</b> '
+                f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>',
+                parse_mode="HTML")
         except Exception:
             pass
-    await call.answer(f"🎁 +{amount} ⭐", show_alert=True)
+
+    await call.answer()
     try:
         await call.message.edit_text(
-            f"🎁 <b>Ежедневный бонус получен!</b>\n\n💫 +{amount}.00 ⭐\n💰 Баланс: <b>{balance}.00</b> ⭐",
-            parse_mode="HTML")
+            f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневный бонус получен!</b>\n\n'
+            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> +{amount}'
+            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>\n'
+            f'<tg-emoji emoji-id="5920281855378068765">⭐️</tg-emoji> Баланс: {balance} '
+            f'<tg-emoji emoji-id="5897501460509234625">⭐️</tg-emoji>',
+            reply_markup=daily_back_kb(), parse_mode="HTML")
     except Exception:
         pass
 
 
+@dp.callback_query(F.data == "daily_back")
+async def daily_back(call: CallbackQuery):
+    u = get_user(call.from_user.id)
+    if not u:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        return
+    balance = u[2]
+    name = call.from_user.first_name or "друг"
+    refs = get_confirmed_refs_count(call.from_user.id)
+    pending = get_pending_refs_count(call.from_user.id)
+    place = get_place(call.from_user.id)
+    await call.message.edit_text(
+        f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
+        f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
+        f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{call.from_user.id}</code>\n\n'
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Друзей: <b>{refs}</b>\n'
+        f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> Ожидают: <b>{pending}</b>\n'
+        f'<tg-emoji emoji-id="5474419165781597383">🏆</tg-emoji> Место в топе: <b>#{place}</b>\n\n'
+        f'<tg-emoji emoji-id="5231102735817918643">👇</tg-emoji> Забирай бонусы и промокоды',
+        reply_markup=profile_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "daily_cancel")
+async def daily_cancel(call: CallbackQuery):
+    await daily_back(call)
+
+
+# ============ ПРОМОКОД ============
 @dp.callback_query(F.data == "enter_promo")
 async def cb_enter_promo(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("🎟 Введи промокод:")
+    try:
+        await call.message.edit_text(
+            f'<tg-emoji emoji-id="5197468864102823838">🎟</tg-emoji> <b>Промокоды</b>\n\n'
+            f'Введите промокод для активации:',
+            reply_markup=promo_cancel_kb(), parse_mode="HTML")
+    except Exception:
+        await call.message.answer(
+            f'<tg-emoji emoji-id="5197468864102823838">🎟</tg-emoji> <b>Промокоды</b>\n\n'
+            f'Введите промокод для активации:',
+            reply_markup=promo_cancel_kb(), parse_mode="HTML")
     await state.set_state(UserPromo.waiting_code)
+
+
+@dp.callback_query(F.data == "promo_cancel")
+async def promo_cancel(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await daily_back(call)
 
 
 @dp.message(UserPromo.waiting_code)
@@ -469,20 +561,27 @@ async def user_promo_check(message: Message, state: FSMContext):
     await state.clear()
     if ok:
         balance = get_balance(message.from_user.id)
-        await message.answer(f"{msg}\n💰 Баланс: <b>{balance}.00</b> ⭐", parse_mode="HTML")
+        await message.answer(
+            f"✅ <b>Промокод активирован!</b>\n\n"
+            f"💰 +{amount}.00 ⭐\n⭐️ Баланс: <b>{balance}.00</b>",
+            parse_mode="HTML")
     else:
-        await message.answer(msg)
+        await message.answer(
+            f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> <b>Промокод не найден</b>\n\n'
+            f'Проверьте правильность написания и попробуйте снова',
+            parse_mode="HTML")
 
 
 # ============ ЗАДАНИЯ ============
-@dp.message(F.text == "📋 Задания")
+@dp.message(F.text == "Задания")
 async def tasks_menu(message: Message):
     if not tasks_enabled():
         await message.answer("❌ Задания временно недоступны.")
         return
-    await message.answer("⏳ Ищу новое задание...")
+    await message.answer(
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ищу новое задание...',
+        parse_mode="HTML")
 
-    # 1. Пробуем Botohub
     data = await bh_get_task(message.from_user.id, skip=False)
     if data:
         if data.get("fake"):
@@ -490,34 +589,35 @@ async def tasks_menu(message: Message):
             return
         tasks = data.get("tasks", [])
         if tasks:
-            link = tasks[0]
-            await show_task(message, link, source="bh")
+            await show_task(message, tasks[0], source="bh")
             return
 
-    # 2. Если Botohub пуст — пробуем свои задания
     custom = get_next_custom_task(message.from_user.id)
     if custom:
         tid, title, link, reward = custom
         await show_task(message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    # 3. Совсем пусто
     await message.answer(
-        "🎯 <b>Все задания выполнены!</b>\n\n"
-        "💰 Пока новых нет — заходи позже\n"
-        "👥 А пока приглашай друзей и получай звёзды за рефералов",
-        parse_mode="HTML"
-    )
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> А пока приглашай друзей и получай звёзды за рефералов',
+        parse_mode="HTML")
 
 
 async def show_task(message, link, source="bh", reward=None):
     if reward is None:
         reward = int(get_setting("task_reward"))
     text = (
-        f"❄️ <b>Собирай Звёзды за простые задания!</b> 👇\n\n"
-        f"✅ Подпишись на канал и нажми «Подтвердить»\n\n"
-        f"❌ За отписку или блокировку ресурса, вы получите бан\n\n"
-        f"<b>Вознаграждение: +{reward}.00 🌟</b>"
+        f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> '
+        f'<b>Собирай Звёзды за простые задания!</b> '
+        f'<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5980930633298350051">✅</tg-emoji> '
+        f'Подпишись на канал и нажми «Подтвердить»\n\n'
+        f'<tg-emoji emoji-id="5765005318610228026">❌</tg-emoji> '
+        f'За отписку или блокировку ресурса, вы получите бан\n\n'
+        f'<b>Вознаграждение: +{reward} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji></b>'
     )
     kb = task_kb(link, source)
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -539,51 +639,43 @@ async def task_skip(call: CallbackQuery):
         tasks = data.get("tasks", [])
         if tasks:
             await call.message.answer(
-                "⏭ <b>Задание пропущено</b>\n\n"
-                "⏳ Загружаю следующее задание...",
-                parse_mode="HTML"
-            )
-            link = tasks[0]
-            await show_task(call.message, link, source="bh")
+                f'<tg-emoji emoji-id="5260450573768990626">➡️</tg-emoji> <b>Задание пропущено</b>\n\n'
+                f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
+                parse_mode="HTML")
+            await show_task(call.message, tasks[0], source="bh")
             return
 
     custom = get_next_custom_task(call.from_user.id)
     if custom:
         tid, title, link, reward = custom
         await call.message.answer(
-            "⏭ <b>Задание пропущено</b>\n\n"
-            "⏳ Загружаю следующее задание...",
-            parse_mode="HTML"
-        )
+            f'<tg-emoji emoji-id="5260450573768990626">➡️</tg-emoji> <b>Задание пропущено</b>\n\n'
+            f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
+            parse_mode="HTML")
         await show_task(call.message, link, source=f"ct:{tid}", reward=reward)
         return
 
     await call.message.answer(
-        "🎯 <b>Все задания выполнены!</b>\n\n"
-        "💰 Пока новых нет — заходи позже\n"
-        "👥 А пока приглашай друзей и получай звёзды за рефералов",
-        parse_mode="HTML"
-    )
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> А пока приглашай друзей и получай звёзды за рефералов',
+        parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("task_check:"))
+@dp.callback_query(F.data.startswith("tc:"))
 async def task_check(call: CallbackQuery):
     user_id = call.from_user.id
     await call.answer()
-
-    parts = call.data.split(":", 2)
-    source = parts[1] if len(parts) > 1 else "bh"
-    extra = parts[2] if len(parts) > 2 else ""
+    source = call.data.split(":", 1)[1]
 
     try:
         msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
     except Exception:
         msg = None
 
-    # Свои задания
-    if source == "ct":
+    if source.startswith("ct:"):
         try:
-            tid = int(extra)
+            tid = int(source.split(":")[1])
         except Exception:
             tid = 0
         t = get_custom_task(tid)
@@ -595,8 +687,7 @@ async def task_check(call: CallbackQuery):
                     pass
             return
         _, title, link, reward, active = t
-        # Проверка подписки через Botohub check_task
-        subscribed = await bh_check_link(user_id, link)
+        subscribed = await bh_check_link(user_id)
         if not subscribed:
             if msg:
                 try:
@@ -609,9 +700,6 @@ async def task_check(call: CallbackQuery):
         balance = get_balance(user_id)
         await _send_reward_and_next(call, msg, reward, balance, user_id)
         return
-
-    # Botohub задания
-    check_link = extra
 
     data = None
     for i in range(3):
@@ -646,22 +734,19 @@ async def task_check(call: CallbackQuery):
         return
 
     reward = int(get_setting("task_reward"))
-    already = bh_reward_was_given(user_id, check_link) if check_link else False
-    if not already and check_link:
-        add_balance(user_id, reward)
-        bh_reward_mark(user_id, check_link)
-
+    add_balance(user_id, reward)
     balance = get_balance(user_id)
     await _send_reward_and_next(call, msg, reward, balance, user_id)
 
 
 async def _send_reward_and_next(call, msg, reward, balance, user_id):
-    """Показать награду и сразу выдать следующее задание."""
     reward_text = (
-        f"✅ <b>Задание выполнено!</b>\n\n"
-        f"💰 Награда: <b>+{reward}.00</b> ⭐\n"
-        f"💎 Баланс: <b>{balance}.00</b> ⭐\n\n"
-        f"⏳ Загружаю следующее задание..."
+        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Задание выполнено!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...'
     )
     if msg:
         try:
@@ -674,13 +759,11 @@ async def _send_reward_and_next(call, msg, reward, balance, user_id):
         pass
     await call.message.answer(reward_text, parse_mode="HTML")
 
-    # Ищем следующее задание
     data = await bh_get_task(user_id, skip=False)
     if data and not data.get("fake"):
         tasks = data.get("tasks", [])
         if tasks:
-            link = tasks[0]
-            await show_task(call.message, link, source="bh")
+            await show_task(call.message, tasks[0], source="bh")
             return
 
     custom = get_next_custom_task(user_id)
@@ -690,36 +773,19 @@ async def _send_reward_and_next(call, msg, reward, balance, user_id):
         return
 
     await call.message.answer(
-        "🎯 <b>Все задания выполнены!</b>\n\n"
-        "💰 Пока новых нет — заходи позже\n"
-        "👥 А пока приглашай друзей и получай звёзды за рефералов",
-        parse_mode="HTML"
-    )
-
-
-async def bh_check_link(user_id, link):
-    """Проверка ссылки через Botohub /get-tasks с is_task"""
-    if not BOTOHUB_TOKEN:
-        return False
-    payload = {"chat_id": user_id, "is_task": True, "skip": False}
-    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(BOTOHUB_TASKS_URL, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=15)) as r:
-                data = await r.json()
-                return bool(data.get("prev_success"))
-    except Exception as e:
-        print("bh_check_link error:", e)
-        return False
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> А пока приглашай друзей и получай звёзды за рефералов',
+        parse_mode="HTML")
 
 
 # ============ ВЫВОД ============
-@dp.message(F.text == "💸 Вывести звёзды")
+@dp.message(F.text == "Вывести звёзды")
 async def withdraw(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❣️ <b>Выбери подарок</b>",
-                         reply_markup=gifts_kb(), parse_mode="HTML")
+    await message.answer(
+        '<tg-emoji emoji-id="5427236501903655352">❣️</tg-emoji> <b>Выбери подарок</b>',
+        reply_markup=gifts_kb(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("gift:"))
@@ -814,28 +880,35 @@ async def bh_wd_check(call: CallbackQuery, state: FSMContext):
 
 async def create_order(call: CallbackQuery, key):
     name, price = GIFTS[key]
+    gift_emoji_id = GIFTS_EMOJI.get(key, "")
     balance = get_balance(call.from_user.id)
     if balance < price:
         await call.answer(f"❌ Нужно {price} ⭐", show_alert=True)
         return
     wid = create_withdrawal(call.from_user.id, price, key)
     uname = f"@{call.from_user.username}" if call.from_user.username else "без username"
-    text = (f"✅ <b>Заявка #{wid} создана!</b>\n\n🎁 Подарок: {name}\n"
-            f"💰 Сумма: {price} ⭐\n⏳ Ожидай — админ отправит подарок вручную.")
+
+    text = (
+        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Заявка #{wid} создана!</b>\n\n'
+        f'<tg-emoji emoji-id="5449800250032143374">🎁</tg-emoji> Подарок: '
+        f'<tg-emoji emoji-id="{gift_emoji_id}">{name[0]}</tg-emoji> {name}\n'
+        f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Сумма: {price} '
+        f'<tg-emoji emoji-id="5386367538735104399">⭐</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
+    )
+
     try:
         await call.message.edit_text(text, parse_mode="HTML")
     except Exception:
         await call.message.answer(text, parse_mode="HTML")
+
     try:
         await bot.send_message(ADMIN_ID,
             f"💸 <b>Новая заявка #{wid}</b>\n\n👤 {uname}\n"
             f"🆔 <code>{call.from_user.id}</code>\n🎁 {name}\n💰 {price} ⭐",
             reply_markup=admin_wd_kb(wid), parse_mode="HTML")
     except Exception as e:
-        print("Ошибка отправки админу:", e)
-
-
-# ============ АДМИНКА ============
+        print("Ошибка отправки админу:", e)# ============ АДМИНКА ============
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -902,7 +975,7 @@ async def bh_toggle(call: CallbackQuery):
 async def bh_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли новый текст для ОП:")
+    await call.message.answer("✏️ Пришли новый текст для ОП (можно HTML + tg-emoji):")
     await state.set_state(BHEdit.waiting_text)
 
 
@@ -919,7 +992,7 @@ async def bh_save_text(message: Message, state: FSMContext):
 async def bh_edit_btn(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🔤 Пришли текст для кнопок:")
+    await call.message.answer("🔤 Пришли текст для кнопок (например, «Подписаться»):")
     await state.set_state(BHEdit.waiting_btn)
 
 
@@ -1220,7 +1293,8 @@ async def backup_help(call: CallbackQuery):
     await call.message.edit_text(
         "📦 <b>Бэкап</b>\n\n"
         "📤 <b>Выгрузка:</b> команда <code>/backup</code>.\n\n"
-        "📥 <b>Загрузка:</b> просто отправь боту JSON-файл.",
+        "📥 <b>Загрузка:</b> просто отправь боту JSON-файл.\n\n"
+        "🤖 Авто-бэкап: каждый день в 8:00 и 20:00 (МСК).",
         reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
@@ -1239,9 +1313,7 @@ async def backup_cmd(message: Message):
             caption=(f"📦 <b>Бэкап</b>\n\n👥 Юзеров: <b>{len(data['users'])}</b>\n"
                      f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
                      f"🎟 Промокодов: <b>{len(data['promos'])}</b>\n"
-                     f"💸 Заявок: <b>{len(data['withdrawals'])}</b>\n"
-                     f"📌 Своих ОП: <b>{len(data['custom_ops'])}</b>\n"
-                     f"📌 Своих заданий: <b>{len(data['custom_tasks'])}</b>"),
+                     f"💸 Заявок: <b>{len(data['withdrawals'])}</b>"),
             parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -1766,7 +1838,8 @@ async def referral_watcher():
                 uname = f"@{u[1]}" if u and u[1] else "друг"
                 try:
                     await bot.send_message(referrer_id,
-                        f"⏳ {uname} зашёл по твоей ссылке, но не забрал бонус.")
+                        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> {uname} зашёл по твоей ссылке, но не забрал бонус.',
+                        parse_mode="HTML")
                 except Exception:
                     pass
                 mark_reminded(rid)
@@ -1779,7 +1852,8 @@ async def referral_watcher():
                     lines = "\n".join([f"• ID <code>{uid}</code>" for uid in users])
                     try:
                         await bot.send_message(referrer_id,
-                            f"⏰ Прошло {REFERRAL_DAYS} дней. Друзья не забрали бонус:\n{lines}",
+                            f'<tg-emoji emoji-id="5787192063099408213">🕗</tg-emoji> <b>Прошло {REFERRAL_DAYS} дней.</b>\n'
+                            f'Друзья не забрали бонус:\n{lines}',
                             parse_mode="HTML")
                     except Exception:
                         pass
@@ -1788,10 +1862,57 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
+async def daily_backup():
+    """Бэкап 2 раза в сутки: в 8:00 и 20:00 по серверу."""
+    while True:
+        try:
+            now = datetime.now()
+            targets = [
+                now.replace(hour=8, minute=0, second=0, microsecond=0),
+                now.replace(hour=20, minute=0, second=0, microsecond=0),
+            ]
+            next_run = None
+            for t in targets:
+                if t > now:
+                    next_run = t
+                    break
+            if next_run is None:
+                next_run = now.replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+            wait_seconds = (next_run - now).total_seconds()
+            print(f"Авто-бэкап: следующий через {int(wait_seconds)} сек ({next_run.strftime('%H:%M')})")
+            await asyncio.sleep(wait_seconds)
+
+            data = export_users_to_json()
+            fname = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            try:
+                file = FSInputFile(fname)
+                await bot.send_document(
+                    ADMIN_ID, file,
+                    caption=(f"📦 <b>Авто-бэкап</b>\n📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                             f"👥 Юзеров: <b>{len(data['users'])}</b>\n"
+                             f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
+                             f"💸 Заявок: <b>{len(data['withdrawals'])}</b>"),
+                    parse_mode="HTML")
+                print("Авто-бэкап отправлен")
+            except Exception as e:
+                print("Backup send error:", e)
+            try:
+                os.remove(fname)
+            except Exception:
+                pass
+        except Exception as e:
+            print("daily_backup error:", e)
+            await asyncio.sleep(3600)
+
+
 # ============ ЗАПУСК ============
 async def main():
     init_db()
     asyncio.create_task(referral_watcher())
+    asyncio.create_task(daily_backup())
     print("Бот запущен")
     print(f"BOT_ID: {BOT_ID}")
     await dp.start_polling(bot)
