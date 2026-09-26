@@ -2,54 +2,28 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-
 from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI
 
 
-# ============ ПОЛЬЗОВАТЕЛЬСКИЕ ============
 def main_menu():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [KeyboardButton(
-            text="Заработать звёзды",
-            icon_custom_emoji_id="5438496463044752972"
-        )],
-        [KeyboardButton(
-            text="Вывести звёзды",
-            icon_custom_emoji_id="6025976946083500432"
-        )],
-        [KeyboardButton(
-            text="Задания",
-            icon_custom_emoji_id="5427168083074628963"
-        ),
-         KeyboardButton(
-            text="Профиль",
-            icon_custom_emoji_id="5325971446625758812"
-        )],
+        [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
+        [KeyboardButton(text="Вывести звёзды", icon_custom_emoji_id="6025976946083500432")],
+        [KeyboardButton(text="Задания", icon_custom_emoji_id="5427168083074628963"),
+         KeyboardButton(text="Профиль", icon_custom_emoji_id="5325971446625758812")],
     ])
 
 
 def earn_kb(share_url):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Пригласить друга",
-            url=share_url,
-            icon_custom_emoji_id="5258362837411045098"
-        )],
+        [InlineKeyboardButton(text="Пригласить друга", url=share_url, icon_custom_emoji_id="5258362837411045098")],
     ])
 
 
 def profile_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Ежедневный бонус",
-            callback_data="daily_bonus",
-            icon_custom_emoji_id="5449800250032143374"
-        )],
-        [InlineKeyboardButton(
-            text="Ввести промокод",
-            callback_data="enter_promo",
-            icon_custom_emoji_id="5197468864102823838"
-        )],
+        [InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_bonus", icon_custom_emoji_id="5449800250032143374")],
+        [InlineKeyboardButton(text="Ввести промокод", callback_data="enter_promo", icon_custom_emoji_id="5197468864102823838")],
     ])
 
 
@@ -75,60 +49,31 @@ def gifts_kb():
 
 def task_kb(link, source="bh"):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Перейти",
-            url=link,
-            icon_custom_emoji_id="5368733682917980020"
-        ),
-         InlineKeyboardButton(
-            text="Пропустить",
-            callback_data="task_skip",
-            icon_custom_emoji_id="5260450573768990626"
-        )],
-        [InlineKeyboardButton(
-            text="Подтвердить",
-            callback_data=f"tc:{source}",
-            icon_custom_emoji_id="6026257381678124710"
-        )],
+        [InlineKeyboardButton(text="Перейти", url=link, icon_custom_emoji_id="5368733682917980020"),
+         InlineKeyboardButton(text="Пропустить", callback_data="task_skip", icon_custom_emoji_id="5260450573768990626")],
+        [InlineKeyboardButton(text="Подтвердить", callback_data=f"tc:{source}", icon_custom_emoji_id="6026257381678124710")],
     ])
 
 
 def daily_bonus_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Забрать",
-            callback_data="daily_claim",
-            icon_custom_emoji_id="6026257381678124710"
-        )],
-        [InlineKeyboardButton(
-            text="Назад",
-            callback_data="daily_cancel",
-            icon_custom_emoji_id="5258236805890710909"
-        )],
+        [InlineKeyboardButton(text="Забрать", callback_data="daily_claim", icon_custom_emoji_id="6026257381678124710")],
+        [InlineKeyboardButton(text="Назад", callback_data="daily_cancel", icon_custom_emoji_id="5258236805890710909")],
     ])
 
 
 def daily_back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Назад",
-            callback_data="daily_back",
-            icon_custom_emoji_id="5258236805890710909"
-        )],
+        [InlineKeyboardButton(text="Назад", callback_data="daily_back", icon_custom_emoji_id="5258236805890710909")],
     ])
 
 
 def promo_cancel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Отмена",
-            callback_data="promo_cancel",
-            icon_custom_emoji_id="5210952531676504517"
-        )],
+        [InlineKeyboardButton(text="Отмена", callback_data="promo_cancel", icon_custom_emoji_id="5210952531676504517")],
     ])
 
 
-# ============ АДМИНСКИЕ ============
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
@@ -198,10 +143,8 @@ def cop_type_kb():
 
 def admin_wd_kb(wid):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}"),
-        ]
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}")]
     ])
 
 
