@@ -61,8 +61,8 @@ DEFAULTS = {
 
     # --- Автопост ---
     "autopost_enabled": "0",
-    "autopost_chat_id": "",
-    "autopost_text": "",
+    "autopost_chats": "[]",         # JSON массив ID чатов
+    "autopost_texts": "[]",         # JSON массив текстов
     "autopost_interval": "5",       # в минутах
     "autopost_media_type": "",      # "" / "photo" / "video"
     "autopost_media_id": "",        # file_id от Telegram
