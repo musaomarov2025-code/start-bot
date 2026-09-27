@@ -226,12 +226,30 @@ def stats_kb():
 def autopost_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🆔 ID группы", callback_data="ap_edit_chat")],
-        [InlineKeyboardButton(text="✏️ Текст поста", callback_data="ap_edit_text")],
+        [InlineKeyboardButton(text="📝 Тексты поста", callback_data="ap_texts"),
+         InlineKeyboardButton(text="🆔 Чаты", callback_data="ap_chats")],
         [InlineKeyboardButton(text="🖼 Медиа (фото/видео)", callback_data="ap_edit_media"),
          InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="ap_del_media")],
         [InlineKeyboardButton(text="🔗 Кнопки", callback_data="ap_edit_buttons")],
         [InlineKeyboardButton(text="⏱ Интервал (минуты)", callback_data="ap_edit_interval")],
         [InlineKeyboardButton(text=status, callback_data="ap_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def autopost_texts_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить текст", callback_data="ap_text_add")],
+        [InlineKeyboardButton(text="📜 Показать все", callback_data="ap_text_show")],
+        [InlineKeyboardButton(text="🗑 Удалить текст", callback_data="ap_text_del")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="autopost_menu")],
+    ])
+
+
+def autopost_chats_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить чат", callback_data="ap_chat_add")],
+        [InlineKeyboardButton(text="📜 Показать все", callback_data="ap_chat_show")],
+        [InlineKeyboardButton(text="🗑 Удалить чат", callback_data="ap_chat_del")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="autopost_menu")],
     ])
