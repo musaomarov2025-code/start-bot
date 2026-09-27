@@ -44,7 +44,7 @@ from keyboards import (
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
     bh_kb, tasks_kb, ctasks_kb, ctask_type_kb, cop_kb, cop_type_kb, stats_kb,
-    autopost_kb,
+    autopost_kb, autopost_texts_kb, autopost_chats_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -113,6 +113,8 @@ class AutoPost(StatesGroup):
     waiting_media = State()
     waiting_buttons = State()
     waiting_interval = State()
+    waiting_del_text = State()
+    waiting_del_chat = State()
 
 
 # ============ BOTOHUB ОП ============
@@ -327,7 +329,22 @@ def import_users_from_json(data):
     return count
 
 
-# ============ АВТОПОСТ: клавиатура кнопок ============
+# ============ АВТОПОСТ: хелперы ============
+def _load_json_list(key):
+    raw = get_setting(key) or "[]"
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_json_list(key, data):
+    set_setting(key, json.dumps(data, ensure_ascii=False))
+
+
 def _build_autopost_buttons():
     raw = get_setting("autopost_buttons")
     if not raw:
@@ -1032,7 +1049,7 @@ async def create_order(call: CallbackQuery, key):
             reply_markup=admin_wd_kb(wid), parse_mode="HTML")
     except Exception as e:
         print("Ошибка отправки админу:", e)
-      # ================== АДМИНКА ==================
+        # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -1500,17 +1517,17 @@ async def cop_del_id(message: Message, state: FSMContext):
 # ---------- АВТОПОСТ ----------
 def autopost_menu_text():
     enabled = get_setting("autopost_enabled") == "1"
-    chat_id = get_setting("autopost_chat_id") or "—"
+    texts = _load_json_list("autopost_texts")
+    chats = _load_json_list("autopost_chats")
     interval = get_setting("autopost_interval")
     media_type = get_setting("autopost_media_type") or "нет"
-    text_prev = (get_setting("autopost_text") or "—")[:80]
     return (
         f"📢 <b>Автопост</b>\n\n"
         f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
-        f"🆔 Чат: <code>{chat_id}</code>\n"
+        f"📝 Текстов: <b>{len(texts)}</b>\n"
+        f"🆔 Чатов: <b>{len(chats)}</b>\n"
         f"⏱ Интервал: <b>{interval}</b> мин\n"
-        f"🖼 Медиа: <b>{media_type}</b>\n\n"
-        f"📝 Текст:\n{text_prev}..."
+        f"🖼 Медиа: <b>{media_type}</b>"
     )
 
 
@@ -1534,20 +1551,116 @@ async def ap_toggle(call: CallbackQuery):
         autopost_menu_text(), reply_markup=autopost_kb(not current), parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "ap_edit_chat")
-async def ap_edit_chat(call: CallbackQuery, state: FSMContext):
+# --- Тексты ---
+@dp.callback_query(F.data == "ap_texts")
+async def ap_texts_menu(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    texts = _load_json_list("autopost_texts")
+    await call.message.edit_text(
+        f"📝 <b>Тексты поста</b>\n\n"
+        f"Сохранено: <b>{len(texts)}</b>\n\n"
+        f"Каждый интервал бот отправляет <b>следующий по кругу</b>.",
+        reply_markup=autopost_texts_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ap_text_add")
+async def ap_text_add(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("✏️ Пришли текст поста (можно HTML и tg-emoji):")
+    await state.set_state(AutoPost.waiting_text)
+
+
+@dp.message(AutoPost.waiting_text)
+async def ap_text_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    texts = _load_json_list("autopost_texts")
+    texts.append(message.text)
+    _save_json_list("autopost_texts", texts)
+    await state.clear()
+    await message.answer(
+        f"✅ Добавлено. Всего текстов: <b>{len(texts)}</b>",
+        reply_markup=back_admin_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ap_text_show")
+async def ap_text_show(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    texts = _load_json_list("autopost_texts")
+    if not texts:
+        await call.answer("Пусто", show_alert=True)
+        return
+    text = "📝 <b>Все тексты:</b>\n\n"
+    for i, t in enumerate(texts, 1):
+        preview = t[:60] + ("..." if len(t) > 60 else "")
+        text += f"<b>{i}.</b> {preview}\n\n"
+    if len(text) > 4000:
+        text = text[:4000] + "\n...обрезано"
+    await call.message.answer(text, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ap_text_del")
+async def ap_text_del_ask(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    texts = _load_json_list("autopost_texts")
+    if not texts:
+        await call.answer("Пусто", show_alert=True)
+        return
+    await call.message.answer(f"🗑 Пришли номер текста для удаления (1-{len(texts)}):")
+    await state.set_state(AutoPost.waiting_del_text)
+
+
+@dp.message(AutoPost.waiting_del_text)
+async def ap_text_del(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        idx = int(message.text.strip()) - 1
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    texts = _load_json_list("autopost_texts")
+    if idx < 0 or idx >= len(texts):
+        await message.answer("⚠️ Нет такого номера.")
+        return
+    texts.pop(idx)
+    _save_json_list("autopost_texts", texts)
+    await state.clear()
+    await message.answer(
+        f"🗑 Удалено. Осталось: <b>{len(texts)}</b>",
+        reply_markup=back_admin_kb(), parse_mode="HTML")
+
+
+# --- Чаты ---
+@dp.callback_query(F.data == "ap_chats")
+async def ap_chats_menu(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    chats = _load_json_list("autopost_chats")
+    await call.message.edit_text(
+        f"🆔 <b>Чаты для автопоста</b>\n\n"
+        f"Сохранено: <b>{len(chats)}</b>\n\n"
+        f"Каждый текст уходит <b>во все чаты</b> одновременно.",
+        reply_markup=autopost_chats_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "ap_chat_add")
+async def ap_chat_add(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer(
         "🆔 Пришли ID группы или её @username.\n\n"
-        "Если не знаешь ID — перешли любое сообщение из группы боту @userinfobot.\n"
         "Бот должен быть <b>админом</b> в этой группе.",
         parse_mode="HTML")
     await state.set_state(AutoPost.waiting_chat)
 
 
 @dp.message(AutoPost.waiting_chat)
-async def ap_save_chat(message: Message, state: FSMContext):
+async def ap_chat_save(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     value = message.text.strip()
@@ -1557,35 +1670,73 @@ async def ap_save_chat(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"⚠️ Не могу найти чат: <code>{e}</code>", parse_mode="HTML")
         return
-    set_setting("autopost_chat_id", value)
+    chats = _load_json_list("autopost_chats")
+    if value in chats:
+        await message.answer("⚠️ Такой чат уже добавлен.")
+        return
+    chats.append(value)
+    _save_json_list("autopost_chats", chats)
     await state.clear()
-    await message.answer("✅ Чат сохранён", reply_markup=back_admin_kb())
+    await message.answer(
+        f"✅ Добавлено. Всего чатов: <b>{len(chats)}</b>",
+        reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "ap_edit_text")
-async def ap_edit_text(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "ap_chat_show")
+async def ap_chat_show(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли текст поста (можно HTML и tg-emoji):")
-    await state.set_state(AutoPost.waiting_text)
+    chats = _load_json_list("autopost_chats")
+    if not chats:
+        await call.answer("Пусто", show_alert=True)
+        return
+    text = "🆔 <b>Все чаты:</b>\n\n"
+    for i, c in enumerate(chats, 1):
+        text += f"<b>{i}.</b> <code>{c}</code>\n"
+    await call.message.answer(text, parse_mode="HTML")
 
 
-@dp.message(AutoPost.waiting_text)
-async def ap_save_text(message: Message, state: FSMContext):
+@dp.callback_query(F.data == "ap_chat_del")
+async def ap_chat_del_ask(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    chats = _load_json_list("autopost_chats")
+    if not chats:
+        await call.answer("Пусто", show_alert=True)
+        return
+    await call.message.answer(f"🗑 Пришли номер чата для удаления (1-{len(chats)}):")
+    await state.set_state(AutoPost.waiting_del_chat)
+
+
+@dp.message(AutoPost.waiting_del_chat)
+async def ap_chat_del(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    set_setting("autopost_text", message.text)
+    try:
+        idx = int(message.text.strip()) - 1
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    chats = _load_json_list("autopost_chats")
+    if idx < 0 or idx >= len(chats):
+        await message.answer("⚠️ Нет такого номера.")
+        return
+    chats.pop(idx)
+    _save_json_list("autopost_chats", chats)
     await state.clear()
-    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
+    await message.answer(
+        f"🗑 Удалено. Осталось: <b>{len(chats)}</b>",
+        reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
+# --- Медиа ---
 @dp.callback_query(F.data == "ap_edit_media")
 async def ap_edit_media(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer(
         "🖼 Пришли фото или видео (как медиа).\n"
-        "Оно будет прикреплено к посту.")
+        "Оно будет прикреплено к каждому посту.")
     await state.set_state(AutoPost.waiting_media)
 
 
@@ -1622,6 +1773,7 @@ async def ap_del_media(call: CallbackQuery):
         autopost_menu_text(), reply_markup=autopost_kb(enabled), parse_mode="HTML")
 
 
+# --- Кнопки ---
 @dp.callback_query(F.data == "ap_edit_buttons")
 async def ap_edit_buttons(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -1660,6 +1812,7 @@ async def ap_save_buttons(message: Message, state: FSMContext):
     await message.answer("✅ Кнопки сохранены", reply_markup=back_admin_kb())
 
 
+# --- Интервал ---
 @dp.callback_query(F.data == "ap_edit_interval")
 async def ap_edit_interval(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
@@ -2294,11 +2447,12 @@ async def referral_watcher():
 # ================== ФОН: АВТОПОСТ ==================
 async def autopost_worker():
     last_sent = 0.0
+    idx_counter = 0
     while True:
         try:
             if get_setting("autopost_enabled") == "1":
-                chat_id = get_setting("autopost_chat_id")
-                text = get_setting("autopost_text")
+                texts = _load_json_list("autopost_texts")
+                chats = _load_json_list("autopost_chats")
                 try:
                     interval = int(get_setting("autopost_interval") or 5)
                 except Exception:
@@ -2308,39 +2462,33 @@ async def autopost_worker():
                 media_type = get_setting("autopost_media_type")
                 media_id = get_setting("autopost_media_id")
 
-                if chat_id and (text or media_id):
+                if texts and chats:
                     now = time.time()
                     if now - last_sent >= interval_sec:
+                        text = texts[idx_counter % len(texts)]
+                        idx_counter += 1
                         kb = _build_autopost_buttons()
-                        try:
-                            if media_type == "photo" and media_id:
-                                await bot.send_photo(
-                                    chat_id=chat_id,
-                                    photo=media_id,
-                                    caption=text or None,
-                                    reply_markup=kb,
-                                    parse_mode="HTML" if text else None,
-                                )
-                            elif media_type == "video" and media_id:
-                                await bot.send_video(
-                                    chat_id=chat_id,
-                                    video=media_id,
-                                    caption=text or None,
-                                    reply_markup=kb,
-                                    parse_mode="HTML" if text else None,
-                                )
-                            else:
-                                await bot.send_message(
-                                    chat_id=chat_id,
-                                    text=text,
-                                    reply_markup=kb,
-                                    parse_mode="HTML",
-                                )
-                            last_sent = now
-                            print(f"[autopost] отправлено в {chat_id}")
-                        except Exception as e:
-                            print("[autopost] ошибка:", e)
-                            last_sent = now
+                        for chat_raw in chats:
+                            try:
+                                cid = int(chat_raw) if str(chat_raw).lstrip("-").isdigit() else chat_raw
+                                if media_type == "photo" and media_id:
+                                    await bot.send_photo(
+                                        chat_id=cid, photo=media_id,
+                                        caption=text or None, reply_markup=kb,
+                                        parse_mode="HTML" if text else None)
+                                elif media_type == "video" and media_id:
+                                    await bot.send_video(
+                                        chat_id=cid, video=media_id,
+                                        caption=text or None, reply_markup=kb,
+                                        parse_mode="HTML" if text else None)
+                                else:
+                                    await bot.send_message(
+                                        chat_id=cid, text=text,
+                                        reply_markup=kb, parse_mode="HTML")
+                                print(f"[autopost] отправлено в {cid}")
+                            except Exception as e:
+                                print(f"[autopost] ошибка в {chat_raw}: {e}")
+                        last_sent = now
         except Exception as e:
             print("autopost_worker error:", e)
         await asyncio.sleep(30)
