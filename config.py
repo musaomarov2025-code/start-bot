@@ -22,6 +22,7 @@ EMOJI = {
     "check":     "6026257381678124710",
     "skip":      "5260450573768990626",
     "star":      "5895708410447401643",
+    "star2":     "5386367538735104399",
     "gift":      "5449800250032143374",
     "money":     "6025976946083500432",
     "fire":      "5449449325434266744",
@@ -41,12 +42,10 @@ EMOJI = {
     "update":    "5920433463428650761",
     "heart":     "5193018401810822951",
     "shine":     "5469744063815102906",
-    "five":      "5895708410447401643",
 }
 
 
 def e(key, fallback="⭐"):
-    """Хелпер: <tg-emoji emoji-id=...>fallback</tg-emoji>"""
     eid = EMOJI.get(key, "")
     if not eid:
         return fallback
@@ -105,6 +104,17 @@ DEFAULTS = {
     ),
     "botohub_btn_text": "Подписаться",
 
+    # --- ОП на старте (свои каналы) ---
+    "op_text": (
+        '<tg-emoji emoji-id="5258093637450866522">🔒</tg-emoji> '
+        'Для использования бота подпишись на каналы ниже\n\n'
+        '<tg-emoji emoji-id="6026034017608930629">👉</tg-emoji> '
+        'После подписки нажимай на кнопку '
+        '"<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> Я Подписался"'
+    ),
+    "op_btn_sub": "Подписаться",
+    "op_btn_done": "Я подписался",
+
     # --- Задания (общие) ---
     "tasks_enabled": "1",
     "task_reward": "0.45",
@@ -117,7 +127,7 @@ DEFAULTS = {
         '<tg-emoji emoji-id="5765005318610228026">❌</tg-emoji> '
         'За отписку или блокировку ресурса, вы получите бан\n\n'
         '<b>Вознаграждение: +{reward} '
-        '<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji></b>'
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji></b>'
     ),
     "task_btn_go": "Перейти",
     "task_btn_check": "Проверить",
@@ -129,31 +139,18 @@ DEFAULTS = {
         'Новые задания скоро появятся…\n\n'
         '<tg-emoji emoji-id="5449800250032143374">💖</tg-emoji> '
         'За друга платим больше — +{bonus} '
-        '<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>'
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>'
     ),
     "task_reward_text": (
         '<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> '
         '<b>Задание выполнено!</b>\n\n'
         '<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> '
         'Награда: <b>+{reward}</b> '
-        '<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>\n'
         '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> '
         'Баланс: <b>{balance}</b> '
-        '<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>'
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>'
     ),
-
-    # --- ОП на старте (основной канал) ---
-    "op_enabled": "0",
-    "op_link": "",
-    "op_check_target": "",  # @username или -100xxx. Пусто = без проверки (на доверии)
-    "op_text": (
-        '<tg-emoji emoji-id="5258093637450866522">🔒</tg-emoji> '
-        '<b>Подпишись на основной канал бота</b>\n\n'
-        '<tg-emoji emoji-id="6026034017608930629">👉</tg-emoji> '
-        'После подписки нажми «Я подписался»'
-    ),
-    "op_btn_sub": "Подписаться",
-    "op_btn_done": "Я подписался",
 
     # --- Рефералка за 5 заданий ---
     "ref_tasks_enabled": "1",
@@ -163,7 +160,7 @@ DEFAULTS = {
 
     # --- Тексты для реферала ---
     "earn_text": (
-        '<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji> '
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji> '
         '<b>Получай +{bonus} за каждого приглашенного друга!</b>\n\n'
         '<tg-emoji emoji-id="5260730055880876557">📎</tg-emoji> '
         '<b>Твоя реферальная ссылка:</b>\n{link}\n\n'
@@ -200,6 +197,6 @@ DEFAULTS = {
         '<b>@{username} выполнил 5 заданий!</b>\n\n'
         '<tg-emoji emoji-id="5469744063815102906">💫</tg-emoji> '
         'Тебе начислено <b>+{bonus}</b> '
-        '<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>'
+        '<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>'
     ),
 }
