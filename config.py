@@ -58,4 +58,13 @@ DEFAULTS = {
     "botohub_btn_text": "Подписаться",
     "tasks_enabled": "1",
     "task_reward": "1",
+
+    # --- Автопост ---
+    "autopost_enabled": "0",
+    "autopost_chat_id": "",
+    "autopost_text": "",
+    "autopost_interval": "5",       # в минутах
+    "autopost_media_type": "",      # "" / "photo" / "video"
+    "autopost_media_id": "",        # file_id от Telegram
+    "autopost_buttons": "",         # формат как priv_buttons
 }
