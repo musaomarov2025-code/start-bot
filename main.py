@@ -42,7 +42,7 @@ from keyboards import (
     daily_bonus_kb, daily_back_kb, promo_cancel_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
-    bh_kb, tasks_kb, ctasks_kb, cop_kb, cop_type_kb, stats_kb,
+    bh_kb, tasks_kb, ctasks_kb, ctask_type_kb, cop_kb, cop_type_kb, stats_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -90,9 +90,10 @@ class TasksEdit(StatesGroup):
     waiting_reward = State()
 
 class CTaskAdd(StatesGroup):
+    waiting_type = State()
     waiting_title = State()
     waiting_link = State()
-    waiting_reward = State()
+    waiting_chat_id = State()
 
 class CTaskDel(StatesGroup):
     waiting_id = State()
@@ -161,6 +162,22 @@ async def bh_check_link(user_id):
         return False
 
 
+# ============ ПРОВЕРКА СВОИХ ЗАДАНИЙ ============
+async def check_custom_task(user_id, check_type, check_target):
+    """True — подписан / без проверки; False — не подписан; None — не смогли проверить."""
+    if not check_type or check_type == "bot" or not check_target:
+        return True
+    target = check_target
+    if isinstance(target, str) and target.lstrip("-").isdigit():
+        target = int(target)
+    try:
+        m = await bot.get_chat_member(target, user_id)
+        return m.status in ("member", "administrator", "creator")
+    except Exception as e:
+        print(f"check_custom_task {check_target}: {e}")
+        return True
+
+
 # ============ БЭКАП ============
 def export_users_to_json():
     import sqlite3
@@ -184,8 +201,9 @@ def export_users_to_json():
     cur.execute("SELECT id, title, link, type, active FROM custom_ops")
     custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
                   for r in cur.fetchall()]
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks")
-    custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4]}
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target FROM custom_tasks")
+    custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4],
+                     "check_type": r[5], "check_target": r[6]}
                     for r in cur.fetchall()]
     conn.close()
     return {"exported_at": datetime.now().isoformat(),
@@ -221,8 +239,9 @@ def import_users_from_json(data):
                     (co["title"], co["link"], co["type"], co.get("active", 1)))
     cur.execute("DELETE FROM custom_tasks")
     for ct in data.get("custom_tasks", []):
-        cur.execute("INSERT INTO custom_tasks (title, link, reward, active) VALUES (?,?,?,?)",
-                    (ct["title"], ct["link"], ct["reward"], ct.get("active", 1)))
+        cur.execute("INSERT INTO custom_tasks (title, link, reward, active, check_type, check_target) VALUES (?,?,?,?,?,?)",
+                    (ct["title"], ct["link"], ct.get("reward", 0), ct.get("active", 1),
+                     ct.get("check_type", "bot"), ct.get("check_target", "")))
     conn.commit()
     conn.close()
     return count
@@ -622,7 +641,8 @@ async def tasks_menu(message: Message):
 
     custom = get_next_custom_task(message.from_user.id)
     if custom:
-        tid, title, link, reward = custom
+        tid, title, link, reward_db, ctype, ctarget = custom
+        reward = int(get_setting("task_reward"))
         await show_task(message, link, source=f"ct:{tid}", reward=reward)
         return
 
@@ -655,7 +675,8 @@ async def task_skip(call: CallbackQuery):
 
     custom = get_next_custom_task(call.from_user.id)
     if custom:
-        tid, title, link, reward = custom
+        tid, title, link, reward_db, ctype, ctarget = custom
+        reward = int(get_setting("task_reward"))
         await call.message.answer(
             f'<tg-emoji emoji-id="5260450573768990626">➡️</tg-emoji> '
             f'<b>Задание пропущено</b>\n\n'
@@ -697,7 +718,8 @@ async def _send_reward_and_next(call, msg, reward, balance, user_id):
 
     custom = get_next_custom_task(user_id)
     if custom:
-        tid, title, link, reward2 = custom
+        tid, title, link, reward_db, ctype, ctarget = custom
+        reward2 = int(get_setting("task_reward"))
         await show_task(call.message, link, source=f"ct:{tid}", reward=reward2)
         return
 
@@ -728,9 +750,9 @@ async def task_check(call: CallbackQuery):
                 except Exception:
                     pass
             return
-        _, title, link, reward, active = t
-        subscribed = await bh_check_link(user_id)
-        if not subscribed:
+        _, title, link, reward_db, active, check_type, check_target = t
+        ok = await check_custom_task(user_id, check_type, check_target)
+        if ok is False:
             if msg:
                 try:
                     await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
@@ -738,6 +760,7 @@ async def task_check(call: CallbackQuery):
                     pass
             return
         mark_custom_task_done(user_id, tid)
+        reward = int(get_setting("task_reward"))
         add_balance(user_id, reward)
         balance = get_balance(user_id)
         await _send_reward_and_next(call, msg, reward, balance, user_id)
@@ -1125,8 +1148,31 @@ async def ctasks_menu(call: CallbackQuery):
 async def ctask_add(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("📝 Название задания (для себя):")
+    await call.message.answer(
+        "📌 <b>Выбери тип задания:</b>\n\n"
+        "📢 <b>Открытый канал</b> — есть @username\n"
+        "🔒 <b>Закрытый канал</b> — invite-ссылка + chat_id\n"
+        "🤖 <b>Бот по рефке</b> — без проверки",
+        reply_markup=ctask_type_kb(), parse_mode="HTML")
+    await state.set_state(CTaskAdd.waiting_type)
+
+
+@dp.callback_query(F.data.startswith("ctask_type:"), CTaskAdd.waiting_type)
+async def ctask_type_chosen(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    ct = call.data.split(":")[1]
+    if ct not in ("open", "closed", "bot"):
+        await call.answer("Неизвестный тип")
+        return
+    await state.update_data(ct_type=ct)
+    names = {"open": "📢 Открытый канал", "closed": "🔒 Закрытый канал", "bot": "🤖 Бот по рефке"}
+    try:
+        await call.message.edit_text(f"{names[ct]}\n\n📝 Название задания (для себя):")
+    except Exception:
+        await call.message.answer(f"{names[ct]}\n\n📝 Название задания (для себя):")
     await state.set_state(CTaskAdd.waiting_title)
+    await call.answer()
 
 
 @dp.message(CTaskAdd.waiting_title)
@@ -1134,7 +1180,17 @@ async def ctask_title(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.update_data(ct_title=message.text.strip())
-    await message.answer("🔗 Ссылка (https://t.me/...):")
+    data = await state.get_data()
+    ct = data.get("ct_type")
+    if ct == "open":
+        await message.answer("🔗 Пришли @username канала или ссылку <code>t.me/username</code>",
+                             parse_mode="HTML")
+    elif ct == "closed":
+        await message.answer("🔗 Пришли invite-ссылку канала (<code>t.me/+xxxxx</code>)",
+                             parse_mode="HTML")
+    else:
+        await message.answer("🔗 Пришли ссылку на бота (<code>t.me/xxxbot?start=yyy</code>)",
+                             parse_mode="HTML")
     await state.set_state(CTaskAdd.waiting_link)
 
 
@@ -1142,26 +1198,78 @@ async def ctask_title(message: Message, state: FSMContext):
 async def ctask_link(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    link = message.text.strip()
-    if not link.startswith("http"):
+    raw = message.text.strip()
+    data = await state.get_data()
+    ct = data.get("ct_type")
+
+    if ct == "open":
+        target = raw
+        if "t.me/" in target:
+            target = target.split("t.me/")[-1].split("?")[0].strip("/")
+        target = target.lstrip("@")
+        if not target:
+            await message.answer("⚠️ Не могу разобрать username.")
+            return
+        check_target = "@" + target
+        link = f"https://t.me/{target}"
+        try:
+            await bot.get_chat(check_target)
+        except Exception as e:
+            await message.answer(
+                f"⚠️ Не могу получить инфо о канале <code>{check_target}</code>:\n"
+                f"<code>{e}</code>\n\n"
+                f"Добавлю всё равно — проверь, что бот добавлен админом в канал.",
+                parse_mode="HTML")
+        await state.update_data(ct_link=link, ct_check_type="open", ct_check_target=check_target)
+        await _ctask_finish(message, state)
+        return
+
+    if ct == "closed":
+        if not raw.startswith("http"):
+            await message.answer("⚠️ Ссылка должна начинаться с http.")
+            return
+        await state.update_data(ct_link=raw, ct_check_type="closed")
+        await message.answer("🆔 Пришли chat_id канала (например, <code>-1001234567890</code>)",
+                             parse_mode="HTML")
+        await state.set_state(CTaskAdd.waiting_chat_id)
+        return
+
+    # bot
+    if not raw.startswith("http"):
         await message.answer("⚠️ Ссылка должна начинаться с http.")
         return
-    await state.update_data(ct_link=link)
-    await message.answer("💰 Сколько звёзд за выполнение?")
-    await state.set_state(CTaskAdd.waiting_reward)
+    await state.update_data(ct_link=raw, ct_check_type="bot", ct_check_target="")
+    await _ctask_finish(message, state)
 
 
-@dp.message(CTaskAdd.waiting_reward)
-async def ctask_reward(message: Message, state: FSMContext):
+@dp.message(CTaskAdd.waiting_chat_id)
+async def ctask_chat_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    try:
-        reward = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
+    raw = message.text.strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("⚠️ chat_id должен быть числом (например, -1001234567890).")
         return
+    try:
+        await bot.get_chat(int(raw))
+    except Exception as e:
+        await message.answer(
+            f"⚠️ Не могу получить инфо о канале <code>{raw}</code>:\n"
+            f"<code>{e}</code>\n\n"
+            f"Добавлю всё равно — проверь, что бот добавлен админом в канал.",
+            parse_mode="HTML")
+    await state.update_data(ct_check_target=raw)
+    await _ctask_finish(message, state)
+
+
+async def _ctask_finish(message: Message, state: FSMContext):
     data = await state.get_data()
-    add_custom_task(data["ct_title"], data["ct_link"], reward)
+    add_custom_task(
+        data["ct_title"],
+        data["ct_link"],
+        data.get("ct_check_type", "bot"),
+        data.get("ct_check_target", ""),
+    )
     await state.clear()
     await message.answer("✅ Задание добавлено", reply_markup=back_admin_kb())
 
@@ -1174,9 +1282,15 @@ async def ctask_list(call: CallbackQuery):
     if not rows:
         await call.answer("Пусто", show_alert=True)
         return
+    type_names = {"open": "📢 Открытый", "closed": "🔒 Закрытый", "bot": "🤖 Бот"}
     text = "📜 <b>Свои задания</b>\n\n"
-    for tid, title, link, reward, active in rows:
-        text += f"#{tid} — {title} — {reward}.00 ⭐\n{link}\n\n"
+    for tid, title, link, reward, active, ctype, ctarget in rows:
+        tname = type_names.get(ctype or "bot", "🤖 Бот")
+        text += f"#{tid} — {tname} — {title}\n"
+        text += f"   {link}\n"
+        if ctarget:
+            text += f"   🔎 <code>{ctarget}</code>\n"
+        text += "\n"
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
     await call.message.answer(text, parse_mode="HTML")
