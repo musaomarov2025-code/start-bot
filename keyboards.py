@@ -123,6 +123,15 @@ def ctasks_kb():
     ])
 
 
+def ctask_type_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Открытый канал", callback_data="ctask_type:open")],
+        [InlineKeyboardButton(text="🔒 Закрытый канал", callback_data="ctask_type:closed")],
+        [InlineKeyboardButton(text="🤖 Бот по рефке", callback_data="ctask_type:bot")],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_back")],
+    ])
+
+
 def cop_kb(op_type):
     title = "входе" if op_type == "entry" else "выводе"
     return InlineKeyboardMarkup(inline_keyboard=[
