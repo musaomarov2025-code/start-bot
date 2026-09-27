@@ -98,8 +98,9 @@ def admin_kb():
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
         [InlineKeyboardButton(text="💸 Начислить", callback_data="give_start"),
          InlineKeyboardButton(text="👥 Юзер", callback_data="user_find")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
-         InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
+        [InlineKeyboardButton(text="📢 Автопост", callback_data="autopost_menu"),
+         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
 
 
@@ -218,5 +219,19 @@ def back_admin_kb():
 def stats_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def autopost_kb(enabled):
+    status = "🔴 Выключить" if enabled else "🟢 Включить"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🆔 ID группы", callback_data="ap_edit_chat")],
+        [InlineKeyboardButton(text="✏️ Текст поста", callback_data="ap_edit_text")],
+        [InlineKeyboardButton(text="🖼 Медиа (фото/видео)", callback_data="ap_edit_media"),
+         InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="ap_del_media")],
+        [InlineKeyboardButton(text="🔗 Кнопки", callback_data="ap_edit_buttons")],
+        [InlineKeyboardButton(text="⏱ Интервал (минуты)", callback_data="ap_edit_interval")],
+        [InlineKeyboardButton(text=status, callback_data="ap_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
