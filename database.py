@@ -16,6 +16,15 @@ def init_db():
     cur.execute("""CREATE TABLE IF NOT EXISTS bh_rewards (user_id INTEGER, link TEXT, done_at TEXT, PRIMARY KEY (user_id, link))""")
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, reward INTEGER DEFAULT 10, active INTEGER DEFAULT 1)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks_done (user_id INTEGER, task_id INTEGER, done_at TEXT, PRIMARY KEY (user_id, task_id))""")
+
+    # --- миграция custom_tasks: добавляем check_type и check_target ---
+    cur.execute("PRAGMA table_info(custom_tasks)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "check_type" not in cols:
+        cur.execute("ALTER TABLE custom_tasks ADD COLUMN check_type TEXT DEFAULT 'bot'")
+    if "check_target" not in cols:
+        cur.execute("ALTER TABLE custom_tasks ADD COLUMN check_target TEXT DEFAULT ''")
+
     conn.commit()
     conn.close()
 
@@ -406,10 +415,14 @@ def bh_reward_was_given(user_id, link):
     return row is not None
 
 
-def add_custom_task(title, link, reward):
+def add_custom_task(title, link, check_type="bot", check_target=""):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT INTO custom_tasks (title, link, reward, active) VALUES (?, ?, ?, 1)", (title, link, reward))
+    cur.execute(
+        "INSERT INTO custom_tasks (title, link, reward, active, check_type, check_target) "
+        "VALUES (?, ?, 0, 1, ?, ?)",
+        (title, link, check_type, check_target),
+    )
     conn.commit()
     conn.close()
 
@@ -417,7 +430,8 @@ def add_custom_task(title, link, reward):
 def list_custom_tasks():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks ORDER BY id")
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target "
+                "FROM custom_tasks ORDER BY id")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -426,7 +440,8 @@ def list_custom_tasks():
 def get_custom_task(task_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active FROM custom_tasks WHERE id = ?", (task_id,))
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target "
+                "FROM custom_tasks WHERE id = ?", (task_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -444,7 +459,13 @@ def delete_custom_task(task_id):
 def get_next_custom_task(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("""SELECT id, title, link, reward FROM custom_tasks WHERE active = 1 AND id NOT IN (SELECT task_id FROM custom_tasks_done WHERE user_id = ?) ORDER BY id LIMIT 1""", (user_id,))
+    cur.execute(
+        "SELECT id, title, link, reward, check_type, check_target FROM custom_tasks "
+        "WHERE active = 1 AND id NOT IN "
+        "(SELECT task_id FROM custom_tasks_done WHERE user_id = ?) "
+        "ORDER BY id LIMIT 1",
+        (user_id,),
+    )
     row = cur.fetchone()
     conn.close()
     return row
