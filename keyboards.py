@@ -2,7 +2,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI, get_setting as _gs
+from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI
+from database import get_setting as _gs
 
 
 def _btn(text, **kwargs):
