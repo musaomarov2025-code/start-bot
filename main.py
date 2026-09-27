@@ -22,14 +22,12 @@ from config import (
 from database import (
     init_db, get_setting, set_setting,
     get_user, add_user, update_username, add_balance, get_balance,
-    get_place, can_take_bonus, set_bonus_taken, get_user_display,
+    get_place, can_take_bonus, set_bonus_taken,
     get_all_user_ids,
     create_pending_referral, get_pending_refs_count,
     get_confirmed_refs_count, get_user_referrals,
-    create_ref_progress, get_ref_progress, increment_ref_tasks,
-    set_ref_notified, mark_ref_paid,
-    get_refs_to_notify_5min, get_refs_to_notify_10min,
-    expire_old_ref_progress,
+    confirm_referral, expire_old_referrals,
+    get_refs_to_remind, mark_reminded,
     create_withdrawal, get_withdrawal, get_pending_withdrawals, set_withdrawal_status,
     get_withdrawal_history,
     get_stats, get_top_balance, get_top_refs,
@@ -38,16 +36,13 @@ from database import (
     bh_reward_mark, bh_reward_was_given,
     add_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
     get_next_custom_task, mark_custom_task_done,
-    get_total_tasks_done,
 )
 from keyboards import (
-    main_menu, earn_kb, profile_kb, gifts_kb, task_kb, task_done_kb,
+    main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
     daily_bonus_kb, daily_back_kb, promo_cancel_kb,
     admin_kb, admin_wd_kb, priv_kb, broadcast_kb, settings_kb,
     promos_kb, user_view_kb, back_admin_kb,
-    tasks_kb, ctasks_kb, ctask_type_kb, cop_kb, cop_type_kb, cop_add_type_kb,
-    stats_kb, ref_menu_kb,
-    botohub_op_kb, op_start_multi_kb,
+    bh_kb, tasks_kb, ctasks_kb, ctask_type_kb, cop_kb, cop_type_kb, stats_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -85,10 +80,14 @@ class GiveFlow(StatesGroup):
 class UserFind(StatesGroup):
     waiting_id = State()
 
+class BHEdit(StatesGroup):
+    waiting_text = State()
+    waiting_btn = State()
+    waiting_entry = State()
+    waiting_wd = State()
+
 class TasksEdit(StatesGroup):
     waiting_reward = State()
-    waiting_text = State()
-    waiting_btn_go = State()
 
 class CTaskAdd(StatesGroup):
     waiting_type = State()
@@ -100,30 +99,14 @@ class CTaskDel(StatesGroup):
     waiting_id = State()
 
 class CopAdd(StatesGroup):
-    waiting_op_type = State()   # entry / withdraw
-    waiting_type = State()      # open / closed / bot
     waiting_title = State()
     waiting_link = State()
-    waiting_chat_id = State()
 
 class CopDel(StatesGroup):
     waiting_id = State()
 
-class OpEdit(StatesGroup):
-    waiting_text = State()
 
-class RefEdit(StatesGroup):
-    waiting_bonus = State()
-    waiting_required = State()
-    waiting_days = State()
-    waiting_earn_text = State()
-    waiting_notify_start = State()
-    waiting_notify_5min = State()
-    waiting_notify_10min = State()
-    waiting_notify_done = State()
-
-
-# ============ BOTOHUB ОП (на выводе) ============
+# ============ BOTOHUB ОП ============
 def bh_enabled():
     return get_setting("botohub_enabled") == "1"
 
@@ -163,9 +146,24 @@ async def bh_get_task(chat_id, skip=False):
         return None
 
 
-# ============ ПРОВЕРКА КАНАЛА ============
-async def check_channel(user_id, check_type, check_target):
-    """True — подписан / без проверки; False — не подписан."""
+async def bh_check_link(user_id):
+    if not BOTOHUB_TOKEN:
+        return False
+    payload = {"chat_id": user_id, "is_task": True, "skip": False}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(BOTOHUB_TASKS_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json()
+                return bool(data.get("prev_success"))
+    except Exception as e:
+        print("bh_check_link error:", e)
+        return False
+
+
+# ============ ПРОВЕРКА СВОИХ ЗАДАНИЙ ============
+async def check_custom_task(user_id, check_type, check_target):
     if not check_type or check_type == "bot" or not check_target:
         return True
     target = check_target
@@ -175,8 +173,7 @@ async def check_channel(user_id, check_type, check_target):
         m = await bot.get_chat_member(target, user_id)
         return m.status in ("member", "administrator", "creator")
     except Exception as e:
-        print(f"check_channel {check_target}: {e}")
-        # не смогли проверить — пропускаем, чтобы не блокировать юзера
+        print(f"check_custom_task {check_target}: {e}")
         return True
 
 
@@ -207,59 +204,28 @@ def build_priv_buttons():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ============ ЭКРАН ОП НА СТАРТЕ (свои каналы) ============
-def build_op_start_kb():
-    """Возвращает (текст, клавиатура) или (None, None) если каналов нет."""
-    ops = list_custom_ops("entry")
-    if not ops:
-        return None, None
-    items = []
-    for i, (cid, title, link, ctype, ctarget) in enumerate(ops, 1):
-        sub_text = get_setting("op_btn_sub") or "Подписаться"
-        items.append((f"{sub_text} {i}", link))
-    return get_setting("op_text"), op_start_multi_kb(items)
-
-
-async def op_pass_all(user_id):
-    """Проверяет все каналы ОП на старте. True — все пройдены."""
-    ops = list_custom_ops("entry")
-    for cid, title, link, ctype, ctarget in ops:
-        if not await check_channel(user_id, ctype, ctarget):
-            return False
-    return True
-
-
-async def send_op_start_screen(target):
-    text, kb = build_op_start_kb()
-    if not text:
-        return False
-    if isinstance(target, CallbackQuery):
-        try:
-            await target.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await target.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        await target.answer(text, reply_markup=kb, parse_mode="HTML")
-    return True
-
-
-# ============ ЭКРАН BOTOHUB ОП (на выводе) ============
-async def show_botohub_op_screen(chat_id, user_id, op_type, cb_data_confirm):
+# ============ ЭКРАН ОП (Botohub) ============
+async def show_op_screen(chat_id, user_id, op_type, cb_data_confirm):
     count_key = "botohub_entry_count" if op_type == "entry" else "botohub_withdraw_count"
     try:
         count = int(get_setting(count_key))
     except Exception:
         count = 6
 
-    items = []
-    btn_text = get_setting("botohub_btn_text") or "Подписаться"
+    buttons = []
+    row = []
+    btn_text = get_setting("botohub_btn_text")
+    EMOJI_SUB = "5253742260054409879"
+    EMOJI_OK = "6026257381678124710"
 
-    # свои ОП (дополнительные каналы)
     customs = list_custom_ops(op_type)
-    for i, (cid, title, link, ctype, ctarget) in enumerate(customs, 1):
-        items.append((f"{btn_text} {i}", link))
+    for i, (cid, title, link) in enumerate(customs, 1):
+        row.append(InlineKeyboardButton(
+            text=f"{btn_text} {i}", url=link, icon_custom_emoji_id=EMOJI_SUB))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
 
-    # Botohub ОП
     data = await bh_get_tasks(user_id, count)
     tasks = data.get("tasks", [])
     not_done = [t for t in tasks if not t.get("completed")]
@@ -267,9 +233,18 @@ async def show_botohub_op_screen(chat_id, user_id, op_type, cb_data_confirm):
         link = t.get("url")
         if not link:
             continue
-        items.append((f"{btn_text} {i + len(customs)}", link))
+        row.append(InlineKeyboardButton(
+            text=f"{btn_text} {i + len(customs)}", url=link, icon_custom_emoji_id=EMOJI_SUB))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
 
-    kb = botohub_op_kb(items, cb_data_confirm)
+    buttons.append([InlineKeyboardButton(
+        text="Я подписался", callback_data=cb_data_confirm, icon_custom_emoji_id=EMOJI_OK)])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     text = get_setting("botohub_text")
     await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
 
@@ -283,10 +258,9 @@ def export_users_to_json():
     users = [{"user_id": r[0], "username": r[1], "balance": r[2],
               "last_bonus": r[3], "referrer_id": r[4], "registered_at": r[5]}
              for r in cur.fetchall()]
-    cur.execute("SELECT user_id, referrer_id, tasks_done, started_at, status, paid FROM ref_progress")
-    ref_progress = [{"user_id": r[0], "referrer_id": r[1], "tasks_done": r[2],
-                     "started_at": r[3], "status": r[4], "paid": r[5]}
-                    for r in cur.fetchall()]
+    cur.execute("SELECT user_id, referrer_id, created_at, status FROM referrals")
+    referrals = [{"user_id": r[0], "referrer_id": r[1], "created_at": r[2], "status": r[3]}
+                 for r in cur.fetchall()]
     cur.execute("SELECT code, amount, max_uses, used, active FROM promos")
     promos = [{"code": r[0], "amount": r[1], "max_uses": r[2], "used": r[3], "active": r[4]}
               for r in cur.fetchall()]
@@ -295,9 +269,8 @@ def export_users_to_json():
                    for r in cur.fetchall()]
     cur.execute("SELECT key, value FROM settings")
     settings = {r[0]: r[1] for r in cur.fetchall()}
-    cur.execute("SELECT id, title, link, type, active, check_type, check_target FROM custom_ops")
-    custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4],
-                   "check_type": r[5], "check_target": r[6]}
+    cur.execute("SELECT id, title, link, type, active FROM custom_ops")
+    custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
                   for r in cur.fetchall()]
     cur.execute("SELECT id, title, link, reward, active, check_type, check_target FROM custom_tasks")
     custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4],
@@ -305,7 +278,7 @@ def export_users_to_json():
                     for r in cur.fetchall()]
     conn.close()
     return {"exported_at": datetime.now().isoformat(),
-            "users": users, "ref_progress": ref_progress, "promos": promos,
+            "users": users, "referrals": referrals, "promos": promos,
             "withdrawals": withdrawals, "settings": settings,
             "custom_ops": custom_ops, "custom_tasks": custom_tasks}
 
@@ -320,14 +293,10 @@ def import_users_from_json(data):
                     (u["user_id"], u.get("username"), u.get("balance", 0),
                      u.get("last_bonus"), u.get("referrer_id"), u.get("registered_at")))
         count += 1
-    cur.execute("DELETE FROM ref_progress")
-    for rp in data.get("ref_progress", []):
-        cur.execute(
-            "INSERT INTO ref_progress (user_id, referrer_id, tasks_done, started_at, status, paid) "
-            "VALUES (?,?,?,?,?,?)",
-            (rp["user_id"], rp.get("referrer_id"), rp.get("tasks_done", 0),
-             rp.get("started_at"), rp.get("status", "active"), rp.get("paid", 0)),
-        )
+    cur.execute("DELETE FROM referrals")
+    for r in data.get("referrals", []):
+        cur.execute("INSERT INTO referrals (user_id, referrer_id, created_at, status) VALUES (?,?,?,?)",
+                    (r["user_id"], r["referrer_id"], r.get("created_at"), r.get("status", "pending")))
     for p in data.get("promos", []):
         cur.execute("INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active) VALUES (?,?,?,?,?)",
                     (p["code"], p["amount"], p["max_uses"], p.get("used", 0), p.get("active", 1)))
@@ -337,9 +306,8 @@ def import_users_from_json(data):
                     (w["user_id"], w["amount"], w.get("gift"), w.get("status", "pending"), w.get("created_at")))
     cur.execute("DELETE FROM custom_ops")
     for co in data.get("custom_ops", []):
-        cur.execute("INSERT INTO custom_ops (title, link, type, active, check_type, check_target) VALUES (?,?,?,?,?,?)",
-                    (co["title"], co["link"], co["type"], co.get("active", 1),
-                     co.get("check_type", "bot"), co.get("check_target", "")))
+        cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?,?,?,?)",
+                    (co["title"], co["link"], co["type"], co.get("active", 1)))
     cur.execute("DELETE FROM custom_tasks")
     for ct in data.get("custom_tasks", []):
         cur.execute("INSERT INTO custom_tasks (title, link, reward, active, check_type, check_target) VALUES (?,?,?,?,?,?)",
@@ -348,88 +316,6 @@ def import_users_from_json(data):
     conn.commit()
     conn.close()
     return count
-
-
-# ============ РЕФЕРАЛЬНЫЕ УВЕДОМЛЕНИЯ ============
-async def _notify_referrer(referrer_id, key, **kwargs):
-    if not referrer_id:
-        return
-    template = get_setting(key)
-    if not template:
-        return
-    try:
-        text = template.format(**kwargs)
-    except Exception as e:
-        print(f"notify format error {key}: {e}")
-        return
-    try:
-        await bot.send_message(referrer_id, text, parse_mode="HTML")
-    except Exception as e:
-        print(f"notify send error {key}: {e}")
-
-
-async def _handle_task_done(user_id):
-    if get_setting("ref_tasks_enabled") != "1":
-        return
-    try:
-        need = int(get_setting("ref_tasks_required") or 5)
-    except Exception:
-        need = 5
-    try:
-        bonus = float(get_setting("ref_tasks_bonus") or 3)
-    except Exception:
-        bonus = 3.0
-
-    new_done, referrer_id, _ = increment_ref_tasks(user_id)
-    if referrer_id is None:
-        return
-
-    if new_done is not None and new_done >= need:
-        add_balance(referrer_id, bonus)
-        mark_ref_paid(user_id)
-        display = get_user_display(user_id)
-        await _notify_referrer(
-            referrer_id, "ref_notify_done",
-            username=display.lstrip("@"),
-            bonus=f"{bonus:g}",
-        )
-        set_ref_notified(user_id, "notified_done")
-
-
-# ============ ЗАДАНИЯ: ПОКАЗ ============
-async def _send_task(message, link, source="bh"):
-    try:
-        reward = float(get_setting("task_reward") or 0.45)
-    except Exception:
-        reward = 0.45
-    text = get_setting("task_text").format(reward=f"{reward:g}")
-    kb = task_kb(link, source)
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
-
-
-async def _show_next_task_or_done(message, user_id):
-    # 1) Botohub
-    data = await bh_get_task(user_id, skip=False)
-    if data and not data.get("fake"):
-        tasks = data.get("tasks", [])
-        if tasks:
-            await _send_task(message, tasks[0], source="bh")
-            return
-
-    # 2) Свои
-    custom = get_next_custom_task(user_id)
-    if custom:
-        tid, title, link, reward_db, ctype, ctarget = custom
-        await _send_task(message, link, source=f"ct:{tid}")
-        return
-
-    # 3) Всё выполнено
-    try:
-        bonus = float(get_setting("ref_tasks_bonus") or 3)
-    except Exception:
-        bonus = 3.0
-    text = get_setting("task_done_text").format(bonus=f"{bonus:g}")
-    await message.answer(text, reply_markup=task_done_kb(), parse_mode="HTML")
 
 
 # ============ СТАРТ ============
@@ -450,12 +336,16 @@ async def start(message: Message, state: FSMContext):
 
     if is_new and referrer and referrer != message.from_user.id:
         create_pending_referral(message.from_user.id, referrer)
-        create_ref_progress(message.from_user.id, referrer)
-        display = message.from_user.username or f"ID {message.from_user.id}"
-        await _notify_referrer(referrer, "ref_notify_start",
-                               username=display.lstrip("@"))
+        try:
+            await bot.send_message(referrer,
+                '<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> '
+                '<b>По твоей ссылке зашёл новый друг!</b>\n\n'
+                'Он должен зайти в профиль и забрать бонус — тогда ты получишь звёзды.',
+                parse_mode="HTML")
+        except Exception:
+            pass
 
-    # приватка
+    # 1. Приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -464,28 +354,63 @@ async def start(message: Message, state: FSMContext):
         else:
             await message.answer(priv_text, parse_mode="HTML")
 
-    # пауза 5 сек
-    await asyncio.sleep(5)
+    # 2. Пауза 3 секунды
+    await asyncio.sleep(3)
 
-    # проверка своих ОП на старте
-    if not await op_pass_all(message.from_user.id):
-        if await send_op_start_screen(message):
+    # 3. Botohub ОП на входе
+    if bh_enabled() and BOTOHUB_TOKEN:
+        try:
+            count = int(get_setting("botohub_entry_count"))
+        except Exception:
+            count = 6
+        data = await bh_get_tasks(message.from_user.id, count)
+        tasks = data.get("tasks", [])
+        customs = list_custom_ops("entry")
+        not_done = [t for t in tasks if not t.get("completed")]
+        if not_done or customs:
+            await show_op_screen(message.chat.id, message.from_user.id, "entry", "bh_entry_check")
             return
 
     welcome = get_setting("welcome_text")
     await message.answer(welcome, reply_markup=main_menu())
 
 
-@dp.callback_query(F.data == "op_check")
-async def op_check_cb(call: CallbackQuery):
+@dp.callback_query(F.data == "bh_entry_check")
+async def bh_entry_check(call: CallbackQuery):
     await call.answer()
-    if not await op_pass_all(call.from_user.id):
-        try:
-            await call.message.answer("❌ Ты ещё не подписался на все каналы. Попробуй снова.")
-        except Exception:
-            pass
+    try:
+        count = int(get_setting("botohub_entry_count"))
+    except Exception:
+        count = 6
+    try:
+        msg = await call.message.answer("⏳ Проверяю подписку, подожди...")
+    except Exception:
+        msg = None
+
+    passed = False
+    for i in range(3):
+        data = await bh_get_tasks(call.from_user.id, count)
+        tasks = data.get("tasks", [])
+        not_done = [t for t in tasks if not t.get("completed")]
+        if data.get("completed") or data.get("skip") or not not_done:
+            passed = True
+            break
+        if i < 2:
+            await asyncio.sleep(7)
+
+    if not passed:
+        if msg:
+            try:
+                await msg.edit_text("❌ Ты ещё не подписался. Попробуй ещё раз.")
+            except Exception:
+                pass
         return
 
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     try:
         await call.message.delete()
     except Exception:
@@ -497,21 +422,28 @@ async def op_check_cb(call: CallbackQuery):
 @dp.message(F.text == "Заработать звёзды")
 async def earn(message: Message):
     me = await bot.get_me()
+    ref_bonus = get_setting("ref_bonus")
+    refs = get_confirmed_refs_count(message.from_user.id)
     ref_link = f"https://t.me/{me.username}?start=ref_{message.from_user.id}"
     share_text = "Заходи в бота, тут раздают звёзды ⭐"
     share_url = (f"https://t.me/share/url?url={quote(ref_link, safe='')}"
                  f"&text={quote(share_text, safe='')}")
 
-    try:
-        bonus = float(get_setting("ref_tasks_bonus") or 3)
-    except Exception:
-        bonus = 3.0
-    count = get_confirmed_refs_count(message.from_user.id)
-
-    text = get_setting("earn_text").format(
-        bonus=f"{bonus:g}",
-        link=ref_link,
-        count=count,
+    text = (
+        f'Приглашай пользователей в бота и получай по {ref_bonus} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji> '
+        f'как только они подпишутся на каналы!\n\n'
+        f'<tg-emoji emoji-id="5260730055880876557">⛓</tg-emoji><b>Ваша ссылка:</b>\n'
+        f'{ref_link}\n\n'
+        f'<blockquote>'
+        f'<tg-emoji emoji-id="5361948905900635660">❓</tg-emoji> <b>Как использовать реферальную ссылку?</b>\n'
+        f'• Отправь её друзьям в личные сообщения <tg-emoji emoji-id="5258513401784573443">👥</tg-emoji>\n'
+        f'• Поделись ссылкой в своём Telegram-канале <tg-emoji emoji-id="5258236805890710909">⬅️</tg-emoji>\n'
+        f'• Оставь её в комментариях или чатах <tg-emoji emoji-id="5258215850745275216">➡️</tg-emoji>\n'
+        f'• Распространяй ссылку в соцсетях: TikTok, Instagram, WhatsApp и других '
+        f'<tg-emoji emoji-id="5258057130228849960">✅</tg-emoji>'
+        f'</blockquote>\n\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Вы пригласили: <b>{refs}</b>'
     )
     await message.answer(text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
@@ -528,7 +460,7 @@ def _profile_text(uid: int, first_name: str) -> str:
         f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
         f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
         f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{uid}</code>\n\n'
-        f'<tg-emoji emoji-id="5386367538735104399">⭐</tg-emoji> Баланс: <b>{float(balance):.2f}</b>\n'
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
         f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Друзей: <b>{refs}</b>\n'
         f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> Ожидают: <b>{pending}</b>\n'
         f'<tg-emoji emoji-id="5474419165781597383">🏆</tg-emoji> Место в топе: <b>#{place}</b>\n\n'
@@ -562,24 +494,19 @@ async def profile(message: Message):
 @dp.callback_query(F.data == "daily_bonus")
 async def cb_daily_bonus(call: CallbackQuery):
     balance = get_balance(call.from_user.id)
-    try:
-        bal_str = f"{float(balance):g}"
-    except Exception:
-        bal_str = str(balance)
-
     if not can_take_bonus(call.from_user.id):
         await call.message.edit_text(
             f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневные бонусы</b>\n\n'
             f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> Бонус уже получен сегодня!\n\n'
-            f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {bal_str} '
-            f'<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>',
+            f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {balance} '
+            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>',
             reply_markup=daily_back_kb(), parse_mode="HTML")
         return
     await call.message.edit_text(
         f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневные бонусы</b>\n\n'
         f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> Собирай ежедневный бонус каждый день!\n\n'
-        f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {bal_str} '
-        f'<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>',
+        f'<tg-emoji emoji-id="5920108570627544286">⭐️</tg-emoji> Твой баланс: {balance} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>',
         reply_markup=daily_bonus_kb(), parse_mode="HTML")
 
 
@@ -588,22 +515,34 @@ async def daily_claim(call: CallbackQuery):
     if not can_take_bonus(call.from_user.id):
         await call.answer("⏳ Уже забирал сегодня!", show_alert=True)
         return
-    try:
-        amount = float(get_setting("daily_bonus") or 1)
-    except Exception:
-        amount = 1.0
+    amount = int(get_setting("daily_bonus"))
     add_balance(call.from_user.id, amount)
     set_bonus_taken(call.from_user.id)
     balance = get_balance(call.from_user.id)
+
+    referrer = confirm_referral(call.from_user.id)
+    if referrer:
+        ref_bonus = int(get_setting("ref_bonus"))
+        add_balance(referrer, ref_bonus)
+        try:
+            await bot.send_message(referrer,
+                f'<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> '
+                f'<b>Друг подтвердил реферал!</b>\n\n'
+                f'<tg-emoji emoji-id="5469744063815102906">💫</tg-emoji> '
+                f'Тебе начислено <b>+{ref_bonus}</b> '
+                f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>',
+                parse_mode="HTML")
+        except Exception:
+            pass
 
     await call.answer()
     try:
         await call.message.edit_text(
             f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневный бонус получен!</b>\n\n'
-            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> +{amount:g}'
-            f'<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>\n'
-            f'<tg-emoji emoji-id="5920281855378068765">⭐️</tg-emoji> Баланс: {float(balance):g} '
-            f'<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>',
+            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> +{amount}'
+            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>\n'
+            f'<tg-emoji emoji-id="5920281855378068765">⭐️</tg-emoji> Баланс: {balance} '
+            f'<tg-emoji emoji-id="5897501460509234625">⭐️</tg-emoji>',
             reply_markup=daily_back_kb(), parse_mode="HTML")
     except Exception:
         pass
@@ -648,7 +587,7 @@ async def user_promo_check(message: Message, state: FSMContext):
         balance = get_balance(message.from_user.id)
         await message.answer(
             f"✅ <b>Промокод активирован!</b>\n\n"
-            f"💰 +{float(amount):g} ⭐\n⭐️ Баланс: <b>{float(balance):g}</b>",
+            f"💰 +{amount}.00 ⭐\n⭐️ Баланс: <b>{balance}.00</b>",
             parse_mode="HTML")
     else:
         await message.answer(
@@ -659,22 +598,60 @@ async def user_promo_check(message: Message, state: FSMContext):
 
 
 # ============ ЗАДАНИЯ ============
+async def show_task(message, link, source="bh", reward=None):
+    if reward is None:
+        reward = int(get_setting("task_reward"))
+    text = (
+        f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> '
+        f'<b>Собирай Звёзды за простые задания!</b> '
+        f'<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5980930633298350051">✅</tg-emoji> '
+        f'Подпишись на канал и нажми «Подтвердить»\n\n'
+        f'<tg-emoji emoji-id="5765005318610228026">❌</tg-emoji> '
+        f'За отписку или блокировку ресурса, вы получите бан\n\n'
+        f'<b>Вознаграждение: +{reward} '
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji></b>'
+    )
+    kb = task_kb(link, source)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _no_tasks_left(message):
+    await message.answer(
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> <b>Все задания выполнены!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Пока новых нет — заходи позже\n'
+        f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> '
+        f'А пока приглашай друзей и получай звёзды за рефералов',
+        parse_mode="HTML")
+
+
 @dp.message(F.text == "Задания")
 async def tasks_menu(message: Message):
     if not tasks_enabled():
         await message.answer("❌ Задания временно недоступны.")
         return
-    await _show_next_task_or_done(message, message.from_user.id)
+    await message.answer(
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ищу новое задание...',
+        parse_mode="HTML")
 
+    data = await bh_get_task(message.from_user.id, skip=False)
+    if data:
+        if data.get("fake"):
+            await message.answer("🚫 Задания недоступны для этого аккаунта")
+            return
+        tasks = data.get("tasks", [])
+        if tasks:
+            await show_task(message, tasks[0], source="bh")
+            return
 
-@dp.callback_query(F.data == "tasks_refresh")
-async def tasks_refresh(call: CallbackQuery):
-    await call.answer()
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await _show_next_task_or_done(call.message, call.from_user.id)
+    custom = get_next_custom_task(message.from_user.id)
+    if custom:
+        tid, title, link, reward_db, ctype, ctarget = custom
+        reward = int(get_setting("task_reward"))
+        await show_task(message, link, source=f"ct:{tid}", reward=reward)
+        return
+
+    await _no_tasks_left(message)
 
 
 @dp.callback_query(F.data == "task_skip")
@@ -685,28 +662,73 @@ async def task_skip(call: CallbackQuery):
     except Exception:
         pass
 
-    # пробуем Botohub со skip
     data = await bh_get_task(call.from_user.id, skip=True)
-    if data and not data.get("fake"):
+    if data:
+        if data.get("fake"):
+            await call.message.answer("🚫 Задания недоступны для этого аккаунта")
+            return
         tasks = data.get("tasks", [])
         if tasks:
-            await _send_task(call.message, tasks[0], source="bh")
+            await call.message.answer(
+                f'<tg-emoji emoji-id="5260450573768990626">➡️</tg-emoji> '
+                f'<b>Задание пропущено</b>\n\n'
+                f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> '
+                f'Загружаю следующее задание...',
+                parse_mode="HTML")
+            await show_task(call.message, tasks[0], source="bh")
             return
 
-    # свои
     custom = get_next_custom_task(call.from_user.id)
     if custom:
         tid, title, link, reward_db, ctype, ctarget = custom
-        await _send_task(call.message, link, source=f"ct:{tid}")
+        reward = int(get_setting("task_reward"))
+        await call.message.answer(
+            f'<tg-emoji emoji-id="5260450573768990626">➡️</tg-emoji> '
+            f'<b>Задание пропущено</b>\n\n'
+            f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> '
+            f'Загружаю следующее задание...',
+            parse_mode="HTML")
+        await show_task(call.message, link, source=f"ct:{tid}", reward=reward)
         return
 
-    # всё
+    await _no_tasks_left(call.message)
+
+
+async def _send_reward_and_next(call, msg, reward, balance, user_id):
+    reward_text = (
+        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Задание выполнено!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...'
+    )
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
     try:
-        bonus = float(get_setting("ref_tasks_bonus") or 3)
+        await call.message.delete()
     except Exception:
-        bonus = 3.0
-    text = get_setting("task_done_text").format(bonus=f"{bonus:g}")
-    await call.message.answer(text, reply_markup=task_done_kb(), parse_mode="HTML")
+        pass
+    await call.message.answer(reward_text, parse_mode="HTML")
+
+    data = await bh_get_task(user_id, skip=False)
+    if data and not data.get("fake"):
+        tasks = data.get("tasks", [])
+        if tasks:
+            await show_task(call.message, tasks[0], source="bh")
+            return
+
+    custom = get_next_custom_task(user_id)
+    if custom:
+        tid, title, link, reward_db, ctype, ctarget = custom
+        reward2 = int(get_setting("task_reward"))
+        await show_task(call.message, link, source=f"ct:{tid}", reward=reward2)
+        return
+
+    await _no_tasks_left(call.message)
 
 
 @dp.callback_query(F.data.startswith("tc:"))
@@ -720,7 +742,6 @@ async def task_check(call: CallbackQuery):
     except Exception:
         msg = None
 
-    # свои задания
     if source.startswith("ct:"):
         try:
             tid = int(source.split(":")[1])
@@ -735,7 +756,7 @@ async def task_check(call: CallbackQuery):
                     pass
             return
         _, title, link, reward_db, active, check_type, check_target = t
-        ok = await check_channel(user_id, check_type, check_target)
+        ok = await check_custom_task(user_id, check_type, check_target)
         if ok is False:
             if msg:
                 try:
@@ -743,37 +764,13 @@ async def task_check(call: CallbackQuery):
                 except Exception:
                     pass
             return
-
         mark_custom_task_done(user_id, tid)
-
-        try:
-            reward = float(get_setting("task_reward") or 0.45)
-        except Exception:
-            reward = 0.45
+        reward = int(get_setting("task_reward"))
         add_balance(user_id, reward)
         balance = get_balance(user_id)
-
-        await _handle_task_done(user_id)
-
-        if msg:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-
-        text = get_setting("task_reward_text").format(
-            reward=f"{reward:g}",
-            balance=f"{float(balance):g}",
-        )
-        await call.message.answer(text, parse_mode="HTML")
-        await _show_next_task_or_done(call.message, user_id)
+        await _send_reward_and_next(call, msg, reward, balance, user_id)
         return
 
-    # Botohub задание
     data = None
     for i in range(3):
         data = await bh_get_task(user_id, skip=False)
@@ -806,31 +803,10 @@ async def task_check(call: CallbackQuery):
                 pass
         return
 
-    try:
-        reward = float(get_setting("task_reward") or 0.45)
-    except Exception:
-        reward = 0.45
+    reward = int(get_setting("task_reward"))
     add_balance(user_id, reward)
     balance = get_balance(user_id)
-
-    await _handle_task_done(user_id)
-
-    if msg:
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-
-    text = get_setting("task_reward_text").format(
-        reward=f"{reward:g}",
-        balance=f"{float(balance):g}",
-    )
-    await call.message.answer(text, parse_mode="HTML")
-    await _show_next_task_or_done(call.message, user_id)
+    await _send_reward_and_next(call, msg, reward, balance, user_id)
 
 
 # ============ ВЫВОД ============
@@ -852,11 +828,10 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
     balance = get_balance(call.from_user.id)
     if balance < price:
         need = price - balance
-        await call.answer(f"❌ Не хватает {need:.2f} ⭐\nНужно: {price} ⭐\nУ тебя: {balance:.2f} ⭐",
+        await call.answer(f"❌ Не хватает {need} ⭐\nНужно: {price} ⭐\nУ тебя: {balance} ⭐",
                           show_alert=True)
         return
 
-    # проверка Botohub ОП на выводе
     if bh_enabled() and BOTOHUB_TOKEN:
         try:
             count = int(get_setting("botohub_withdraw_count"))
@@ -872,8 +847,7 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                 await call.message.delete()
             except Exception:
                 pass
-            await show_botohub_op_screen(call.from_user.id, call.from_user.id,
-                                          "withdraw", "bh_wd_check")
+            await show_op_screen(call.from_user.id, call.from_user.id, "withdraw", "bh_wd_check")
             return
 
     await create_order(call, key)
@@ -950,7 +924,7 @@ async def create_order(call: CallbackQuery, key):
         f'<tg-emoji emoji-id="5449800250032143374">🎁</tg-emoji> Подарок: '
         f'<tg-emoji emoji-id="{gift_emoji_id}">🎁</tg-emoji> {name}\n'
         f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Сумма: {price} '
-        f'<tg-emoji emoji-id="5386367538735104399">⭐️</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5386367538735104399">⭐</tg-emoji>\n'
         f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
     )
 
@@ -1006,15 +980,122 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# ---------- ЗАДАНИЯ ----------
+# ---------- BOTOHUB ОП ----------
+def bh_menu_text():
+    enabled = bh_enabled()
+    return (
+        f"🎯 <b>Botohub ОП</b>\n\n"
+        f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
+        f"🔑 Токен: <code>{BOTOHUB_TOKEN[:20]}...</code>\n\n"
+        f"📥 ОП на входе: <b>{get_setting('botohub_entry_count')}</b>\n"
+        f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n"
+        f"🔤 Текст кнопок: <code>{get_setting('botohub_btn_text')}</code>\n\n"
+        f"📝 Текст:\n{get_setting('botohub_text')[:80]}..."
+    )
+
+
+@dp.callback_query(F.data == "bh_menu")
+async def bh_menu(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.edit_text(bh_menu_text(), reply_markup=bh_kb(bh_enabled()), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "bh_toggle")
+async def bh_toggle(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    current = get_setting("botohub_enabled") == "1"
+    set_setting("botohub_enabled", "0" if current else "1")
+    await call.answer("✅ Изменено")
+    await call.message.edit_text(bh_menu_text(), reply_markup=bh_kb(not current), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "bh_edit_text")
+async def bh_edit_text(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("✏️ Пришли новый текст для ОП (можно HTML + tg-emoji):")
+    await state.set_state(BHEdit.waiting_text)
+
+
+@dp.message(BHEdit.waiting_text)
+async def bh_save_text(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    set_setting("botohub_text", message.text)
+    await state.clear()
+    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "bh_edit_btn")
+async def bh_edit_btn(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("🔤 Пришли текст для кнопок (например, «Подписаться»):")
+    await state.set_state(BHEdit.waiting_btn)
+
+
+@dp.message(BHEdit.waiting_btn)
+async def bh_save_btn(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    set_setting("botohub_btn_text", message.text.strip())
+    await state.clear()
+    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "bh_edit_entry")
+async def bh_edit_entry(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("📥 Сколько спонсоров на входе?")
+    await state.set_state(BHEdit.waiting_entry)
+
+
+@dp.message(BHEdit.waiting_entry)
+async def bh_save_entry(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    set_setting("botohub_entry_count", val)
+    await state.clear()
+    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
+
+
+@dp.callback_query(F.data == "bh_edit_wd")
+async def bh_edit_wd(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    await call.message.answer("💸 Сколько спонсоров на выводе?")
+    await state.set_state(BHEdit.waiting_wd)
+
+
+@dp.message(BHEdit.waiting_wd)
+async def bh_save_wd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = int(message.text.strip())
+    except Exception:
+        await message.answer("⚠️ Нужно число.")
+        return
+    set_setting("botohub_withdraw_count", val)
+    await state.clear()
+    await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
+
+
+# ---------- ЗАДАНИЯ BOTOHUB ----------
 def tasks_menu_text():
     enabled = tasks_enabled()
     return (
-        f"🎯 <b>Задания (Botohub + свои)</b>\n\n"
+        f"🎯 <b>Задания (Botohub)</b>\n\n"
         f"Статус: {'🟢 включены' if enabled else '🔴 выключены'}\n\n"
-        f"💰 Награда за задание: <b>{get_setting('task_reward')}</b> ⭐\n"
-        f"🔤 Кнопки: "
-        f"<code>{get_setting('task_btn_go')} / {get_setting('task_btn_check')} / {get_setting('task_btn_skip')}</code>"
+        f"💰 Награда за задание: <b>{get_setting('task_reward')}.00</b> ⭐"
     )
 
 
@@ -1039,7 +1120,7 @@ async def tasks_toggle(call: CallbackQuery):
 async def tasks_edit_reward(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("💰 Сколько звёзд давать за задание? (можно 0.45)")
+    await call.message.answer("💰 Сколько звёзд давать за задание?")
     await state.set_state(TasksEdit.waiting_reward)
 
 
@@ -1048,60 +1129,13 @@ async def tasks_save_reward(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        val = float(message.text.strip().replace(",", "."))
+        val = int(message.text.strip())
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
-    set_setting("task_reward", f"{val:g}")
+    set_setting("task_reward", val)
     await state.clear()
-    await message.answer(f"✅ Награда: {val:g} ⭐", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "task_edit_text")
-async def task_edit_text(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Пришли новый текст задания.\n\n"
-        "Плейсхолдер <code>{reward}</code> — сумма награды.\n"
-        "Можно HTML и tg-emoji.",
-        parse_mode="HTML")
-    await state.set_state(TasksEdit.waiting_text)
-
-
-@dp.message(TasksEdit.waiting_text)
-async def task_save_text(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("task_text", message.text)
-    await state.clear()
-    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "task_edit_btns")
-async def task_edit_btns(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "🔤 Пришли через <code>;</code> три текста кнопок:\n"
-        "<code>Перейти;Проверить;Пропустить</code>",
-        parse_mode="HTML")
-    await state.set_state(TasksEdit.waiting_btn_go)
-
-
-@dp.message(TasksEdit.waiting_btn_go)
-async def task_save_btns(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = [p.strip() for p in message.text.split(";")]
-    if len(parts) != 3 or not all(parts):
-        await message.answer("⚠️ Нужно ровно 3 значения через <code>;</code>", parse_mode="HTML")
-        return
-    set_setting("task_btn_go", parts[0])
-    set_setting("task_btn_check", parts[1])
-    set_setting("task_btn_skip", parts[2])
-    await state.clear()
-    await message.answer(f"✅ Сохранено: {parts}", reply_markup=back_admin_kb())
+    await message.answer(f"✅ Награда: {val}.00 ⭐", reply_markup=back_admin_kb())
 
 
 # ---------- СВОИ ЗАДАНИЯ ----------
@@ -1288,7 +1322,7 @@ async def ctask_delete_id(message: Message, state: FSMContext):
     await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
 
 
-# ---------- СВОИ ОП (на старте / на выводе) ----------
+# ---------- СВОИ ОП ----------
 @dp.callback_query(F.data == "cop_menu")
 async def cop_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1303,9 +1337,9 @@ async def cop_menu_type(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     op_type = call.data.split(":")[1]
-    title = "ОП на старте" if op_type == "entry" else "ОП на выводе (доп.)"
+    title = "входе" if op_type == "entry" else "выводе"
     await call.message.edit_text(
-        f"📌 <b>{title}</b>",
+        f"📌 <b>Свои ОП (на {title})</b>",
         reply_markup=cop_kb(op_type), parse_mode="HTML")
 
 
@@ -1315,33 +1349,8 @@ async def cop_add(call: CallbackQuery, state: FSMContext):
         return
     op_type = call.data.split(":")[1]
     await state.update_data(op_type=op_type)
-    await call.message.answer(
-        "📌 <b>Выбери тип канала:</b>\n\n"
-        "📢 <b>Открытый</b> — есть @username\n"
-        "🔒 <b>Закрытый</b> — invite-ссылка + chat_id",
-        reply_markup=cop_add_type_kb(op_type), parse_mode="HTML")
-    await state.set_state(CopAdd.waiting_type)
-
-
-@dp.callback_query(F.data.startswith("cop_type:"), CopAdd.waiting_type)
-async def cop_type_chosen(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    parts = call.data.split(":")
-    if len(parts) != 3:
-        return
-    op_type, ct = parts[1], parts[2]
-    if ct not in ("open", "closed"):
-        await call.answer("Неизвестный тип")
-        return
-    await state.update_data(op_type=op_type, ct_type=ct)
-    names = {"open": "📢 Открытый", "closed": "🔒 Закрытый"}
-    try:
-        await call.message.edit_text(f"{names[ct]}\n\n📝 Название (для себя):")
-    except Exception:
-        await call.message.answer(f"{names[ct]}\n\n📝 Название (для себя):")
+    await call.message.answer("📝 Название (для себя):")
     await state.set_state(CopAdd.waiting_title)
-    await call.answer()
 
 
 @dp.message(CopAdd.waiting_title)
@@ -1349,14 +1358,7 @@ async def cop_add_title(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.update_data(cop_title=message.text.strip())
-    data = await state.get_data()
-    ct = data.get("ct_type")
-    if ct == "open":
-        await message.answer("🔗 Пришли @username канала или <code>t.me/username</code>",
-                             parse_mode="HTML")
-    else:
-        await message.answer("🔗 Пришли invite-ссылку канала (<code>t.me/+xxxxx</code>)",
-                             parse_mode="HTML")
+    await message.answer("🔗 Ссылка (https://t.me/...):")
     await state.set_state(CopAdd.waiting_link)
 
 
@@ -1364,72 +1366,14 @@ async def cop_add_title(message: Message, state: FSMContext):
 async def cop_add_link(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    raw = message.text.strip()
-    data = await state.get_data()
-    ct = data.get("ct_type")
-
-    if ct == "open":
-        target = raw
-        if "t.me/" in target:
-            target = target.split("t.me/")[-1].split("?")[0].strip("/")
-        target = target.lstrip("@")
-        if not target:
-            await message.answer("⚠️ Не могу разобрать username.")
-            return
-        check_target = "@" + target
-        link = f"https://t.me/{target}"
-        try:
-            await bot.get_chat(check_target)
-        except Exception as e:
-            await message.answer(
-                f"⚠️ Не могу получить инфо о канале <code>{check_target}</code>:\n"
-                f"<code>{e}</code>\n\n"
-                f"Добавлю всё равно — проверь, что бот админ в канале.",
-                parse_mode="HTML")
-        await state.update_data(cop_link=link, cop_check_type="open", cop_check_target=check_target)
-        await _cop_finish(message, state)
-        return
-
-    if not raw.startswith("http"):
+    link = message.text.strip()
+    if not link.startswith("http"):
         await message.answer("⚠️ Ссылка должна начинаться с http.")
         return
-    await state.update_data(cop_link=raw, cop_check_type="closed")
-    await message.answer("🆔 Пришли chat_id канала (например, <code>-1001234567890</code>)",
-                         parse_mode="HTML")
-    await state.set_state(CopAdd.waiting_chat_id)
-
-
-@dp.message(CopAdd.waiting_chat_id)
-async def cop_add_chat_id(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    raw = message.text.strip()
-    if not raw.lstrip("-").isdigit():
-        await message.answer("⚠️ chat_id должен быть числом.")
-        return
-    try:
-        await bot.get_chat(int(raw))
-    except Exception as e:
-        await message.answer(
-            f"⚠️ Не могу получить инфо о канале <code>{raw}</code>:\n"
-            f"<code>{e}</code>\n\n"
-            f"Добавлю всё равно — проверь, что бот админ в канале.",
-            parse_mode="HTML")
-    await state.update_data(cop_check_target=raw)
-    await _cop_finish(message, state)
-
-
-async def _cop_finish(message: Message, state: FSMContext):
     data = await state.get_data()
-    add_custom_op(
-        data["cop_title"],
-        data["cop_link"],
-        data.get("op_type", "entry"),
-        data.get("cop_check_type", "bot"),
-        data.get("cop_check_target", ""),
-    )
+    add_custom_op(data["cop_title"], link, data.get("op_type", "entry"))
     await state.clear()
-    await message.answer("✅ Канал добавлен", reply_markup=back_admin_kb())
+    await message.answer("✅ Добавлено", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data.startswith("cop_list:"))
@@ -1441,15 +1385,9 @@ async def cop_list(call: CallbackQuery):
     if not rows:
         await call.answer("Пусто", show_alert=True)
         return
-    type_names = {"open": "📢 Открытый", "closed": "🔒 Закрытый", "bot": "🤖 Без проверки"}
-    title = "ОП на старте" if op_type == "entry" else "ОП на выводе (доп.)"
-    text = f"📜 <b>{title}</b>\n\n"
-    for cid, t, link, ctype, ctarget in rows:
-        tname = type_names.get(ctype or "bot", "🤖")
-        text += f"#{cid} — {tname} — {t}\n{link}\n"
-        if ctarget:
-            text += f"🔎 <code>{ctarget}</code>\n"
-        text += "\n"
+    text = "📜 <b>Свои ОП</b>\n\n"
+    for cid, title, link in rows:
+        text += f"#{cid} — {title}\n{link}\n\n"
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
     await call.message.answer(text, parse_mode="HTML")
@@ -1477,219 +1415,6 @@ async def cop_del_id(message: Message, state: FSMContext):
     await message.answer("🗑 Удалено", reply_markup=back_admin_kb())
 
 
-# ---------- ТЕКСТ ОП НА СТАРТЕ (редактирование) ----------
-@dp.callback_query(F.data == "op_edit_text")
-async def op_edit_text(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Пришли новый текст для ОП на старте (можно HTML + tg-emoji):")
-    await state.set_state(OpEdit.waiting_text)
-
-
-@dp.message(OpEdit.waiting_text)
-async def op_save_text(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("op_text", message.text)
-    await state.clear()
-    await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
-
-
-# ---------- РЕФЕРАЛКА ----------
-def ref_menu_text():
-    enabled = get_setting("ref_tasks_enabled") == "1"
-    return (
-        f"💖 <b>Рефералка</b>\n\n"
-        f"Статус: {'🟢 включена' if enabled else '🔴 выключена'}\n\n"
-        f"🎯 Заданий нужно: <b>{get_setting('ref_tasks_required')}</b>\n"
-        f"💰 Награда рефереру: <b>{get_setting('ref_tasks_bonus')}</b> ⭐\n"
-        f"📅 Дней на выполнение: <b>{get_setting('ref_deadline_days')}</b>"
-    )
-
-
-@dp.callback_query(F.data == "ref_menu")
-async def ref_menu(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    enabled = get_setting("ref_tasks_enabled") == "1"
-    await call.message.edit_text(ref_menu_text(), reply_markup=ref_menu_kb(enabled), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "ref_toggle")
-async def ref_toggle(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    current = get_setting("ref_tasks_enabled") == "1"
-    set_setting("ref_tasks_enabled", "0" if current else "1")
-    await call.answer("✅ Изменено")
-    await call.message.edit_text(ref_menu_text(), reply_markup=ref_menu_kb(not current), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "ref_edit_bonus")
-async def ref_edit_bonus(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer("💰 Сколько звёзд получает реферер за 5/5?")
-    await state.set_state(RefEdit.waiting_bonus)
-
-
-@dp.message(RefEdit.waiting_bonus)
-async def ref_save_bonus(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        val = float(message.text.strip().replace(",", "."))
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
-    set_setting("ref_tasks_bonus", f"{val:g}")
-    await state.clear()
-    await message.answer(f"✅ Награда: {val:g} ⭐", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_required")
-async def ref_edit_required(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer("🎯 Сколько заданий должен выполнить реферал?")
-    await state.set_state(RefEdit.waiting_required)
-
-
-@dp.message(RefEdit.waiting_required)
-async def ref_save_required(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        val = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
-    set_setting("ref_tasks_required", val)
-    await state.clear()
-    await message.answer(f"✅ Нужно заданий: {val}", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_days")
-async def ref_edit_days(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer("📅 Сколько дней даётся рефералу?")
-    await state.set_state(RefEdit.waiting_days)
-
-
-@dp.message(RefEdit.waiting_days)
-async def ref_save_days(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        val = int(message.text.strip())
-    except Exception:
-        await message.answer("⚠️ Нужно число.")
-        return
-    set_setting("ref_deadline_days", val)
-    await state.clear()
-    await message.answer(f"✅ Дней: {val}", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_earn_text")
-async def ref_edit_earn_text(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Текст экрана «Заработать звёзды».\n\n"
-        "Плейсхолдеры: <code>{bonus}</code>, <code>{link}</code>, <code>{count}</code>",
-        parse_mode="HTML")
-    await state.set_state(RefEdit.waiting_earn_text)
-
-
-@dp.message(RefEdit.waiting_earn_text)
-async def ref_save_earn_text(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("earn_text", message.text)
-    await state.clear()
-    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_notify_start")
-async def ref_edit_notify_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Уведомление «старт».\nПлейсхолдер: <code>{username}</code>",
-        parse_mode="HTML")
-    await state.set_state(RefEdit.waiting_notify_start)
-
-
-@dp.message(RefEdit.waiting_notify_start)
-async def ref_save_notify_start(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("ref_notify_start", message.text)
-    await state.clear()
-    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_notify_5min")
-async def ref_edit_notify_5min(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Уведомление «5 минут».\nПлейсхолдер: <code>{username}</code>",
-        parse_mode="HTML")
-    await state.set_state(RefEdit.waiting_notify_5min)
-
-
-@dp.message(RefEdit.waiting_notify_5min)
-async def ref_save_notify_5min(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("ref_notify_5min", message.text)
-    await state.clear()
-    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_notify_10min")
-async def ref_edit_notify_10min(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Уведомление «10 минут».\n"
-        "Плейсхолдеры: <code>{username}</code>, <code>{done}</code>, <code>{need}</code>",
-        parse_mode="HTML")
-    await state.set_state(RefEdit.waiting_notify_10min)
-
-
-@dp.message(RefEdit.waiting_notify_10min)
-async def ref_save_notify_10min(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("ref_notify_10min", message.text)
-    await state.clear()
-    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
-
-
-@dp.callback_query(F.data == "ref_edit_notify_done")
-async def ref_edit_notify_done(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        return
-    await call.message.answer(
-        "✏️ Уведомление «5/5».\n"
-        "Плейсхолдеры: <code>{username}</code>, <code>{bonus}</code>",
-        parse_mode="HTML")
-    await state.set_state(RefEdit.waiting_notify_done)
-
-
-@dp.message(RefEdit.waiting_notify_done)
-async def ref_save_notify_done(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    set_setting("ref_notify_done", message.text)
-    await state.clear()
-    await message.answer("✅ Сохранено", reply_markup=back_admin_kb())
-
-
 # ---------- ЗАЯВКИ ----------
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
@@ -1706,7 +1431,7 @@ async def wd_list(call: CallbackQuery):
         uname = f"@{u[1]}" if u and u[1] else "без username"
         await call.message.answer(
             f"💸 <b>Заявка #{wid}</b>\n👤 {uname}\n🆔 <code>{user_id}</code>\n"
-            f"🎁 {name}\n💰 {amount:g} ⭐",
+            f"🎁 {name}\n💰 {amount} ⭐",
             reply_markup=admin_wd_kb(wid), parse_mode="HTML")
 
 
@@ -1753,7 +1478,7 @@ async def wd_no(call: CallbackQuery):
     set_withdrawal_status(wid, "rejected")
     add_balance(user_id, amount)
     try:
-        await bot.send_message(user_id, f"❌ Заявка #{wid} отклонена.\n{amount:g} ⭐ возвращены.")
+        await bot.send_message(user_id, f"❌ Заявка #{wid} отклонена.\n{amount} ⭐ возвращены.")
     except Exception:
         pass
     try:
@@ -1775,7 +1500,7 @@ async def wd_history(call: CallbackQuery):
         icon = "✅" if status == "completed" else "❌"
         name = GIFTS.get(gift_key, ("—", 0))[0]
         date = (created or "")[:16].replace("T", " ")
-        text += f"{icon} #{wid} — {name} — {amount:g}⭐ — ID<code>{uid}</code> — {date}\n"
+        text += f"{icon} #{wid} — {name} — {amount}⭐ — ID<code>{uid}</code> — {date}\n"
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
     await call.message.edit_text(text, reply_markup=back_admin_kb(), parse_mode="HTML")
@@ -1790,8 +1515,8 @@ async def priv_menu(call: CallbackQuery):
     text = (
         f"🎛 <b>Приватка</b>\n\n"
         f"Статус: {'🟢 включена' if enabled else '🔴 выключена'}\n\n"
-        f"<b>Текст:</b>\n<i>{get_setting('priv_text')}</i>\n\n"
-        f"<b>Кнопки:</b>\n<code>{get_setting('priv_buttons')}</code>"
+        f"<b>Текст:</b>\n{get_setting('priv_text')}\n\n"
+        f"<b>Кнопки:</b>\n{get_setting('priv_buttons')}"
     )
     await call.message.edit_text(text, reply_markup=priv_kb(), parse_mode="HTML")
 
@@ -1930,7 +1655,7 @@ async def give_get_id(message: Message, state: FSMContext):
         await message.answer("⚠️ Не найден.")
         return
     await state.update_data(give_uid=uid)
-    await message.answer(f"👤 @{u[1] or '—'} — баланс: {float(u[2]):g} ⭐\n\nПришли сумму (+ или −):")
+    await message.answer(f"👤 @{u[1] or '—'} — баланс: {u[2]} ⭐\n\nПришли сумму (+ или −):")
     await state.set_state(GiveFlow.waiting_amount)
 
 
@@ -1939,7 +1664,7 @@ async def give_amount(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        amount = float(message.text.strip().replace(",", "."))
+        amount = int(message.text.strip())
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
@@ -1952,7 +1677,7 @@ async def give_amount(message: Message, state: FSMContext):
     new_balance = get_balance(uid)
     await state.clear()
     await message.answer(
-        f"✅ {amount:+g} ⭐\n🆔 <code>{uid}</code>\n💰 Баланс: <b>{float(new_balance):g}</b> ⭐",
+        f"✅ {amount:+d} ⭐\n🆔 <code>{uid}</code>\n💰 Баланс: <b>{new_balance}</b> ⭐",
         reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
@@ -1982,16 +1707,11 @@ async def user_show(message: Message, state: FSMContext):
     refs = get_confirmed_refs_count(uid)
     pending = get_pending_refs_count(uid)
     reg = (u[5] or "")[:16].replace("T", " ")
-    rp = get_ref_progress(uid)
-    rp_line = ""
-    if rp:
-        _, ref_id, done, _, _, _, _, paid, st = rp
-        rp_line = f"\n💖 Прогресс рефа: <b>{done}</b> / 5 — статус <b>{st}</b>"
     await state.clear()
     await message.answer(
         f"👤 <b>Юзер</b>\n\n🧑 @{u[1] or '—'}\n🆔 <code>{uid}</code>\n"
-        f"⭐ Баланс: <b>{float(balance):g}</b>\n👥 Друзей: <b>{refs}</b>\n"
-        f"⏳ Ожидают: <b>{pending}</b>\n📅 Регистрация: {reg}{rp_line}",
+        f"⭐ Баланс: <b>{balance}</b>\n👥 Друзей: <b>{refs}</b>\n"
+        f"⏳ Ожидают: <b>{pending}</b>\n📅 Регистрация: {reg}",
         reply_markup=user_view_kb(uid), parse_mode="HTML")
 
 
@@ -2005,11 +1725,11 @@ async def user_refs(call: CallbackQuery):
         await call.answer("Пусто")
         return
     text = f"👥 <b>Рефералы <code>{uid}</code></b>\n\n"
-    icons = {"done": "✅", "active": "⏳", "expired": "❌", "confirmed": "✅", "pending": "⏳"}
+    icons = {"confirmed": "✅", "pending": "⏳", "expired": "❌"}
     for r_uid, r_name, r_date, r_status in rows:
         icon = icons.get(r_status, "•")
         date = (r_date or "")[:10]
-        name = f"@{r_name}" if r_name else f"ID {r_uid}"
+        name = f"@{r_name}" if r_name else "аноним"
         text += f"{icon} {name} — <code>{r_uid}</code> — {date}\n"
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
@@ -2050,12 +1770,12 @@ async def promo_amount_step(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        amount = float(message.text.replace(",", "."))
+        amount = int(message.text)
     except Exception:
         await message.answer("⚠️ Нужно число.")
         return
     await state.update_data(amount=amount)
-    await message.answer(f"Звёзд: <b>{amount:g}</b>\n\nСколько активаций?", parse_mode="HTML")
+    await message.answer(f"Звёзд: <b>{amount}</b>\n\nСколько активаций?", parse_mode="HTML")
     await state.set_state(PromoCreate.waiting_uses)
 
 
@@ -2073,7 +1793,7 @@ async def promo_uses_step(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ Промокод <code>{data['code']}</code> создан "
-        f"({data['amount']:g} ⭐, {uses} активаций)", parse_mode="HTML")
+        f"({data['amount']} ⭐, {uses} активаций)", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "promo_list")
@@ -2087,7 +1807,7 @@ async def promo_list_cb(call: CallbackQuery):
     text = "📜 <b>Промокоды</b>\n\n"
     for code, amount, mx, used, active in rows:
         status = "🟢" if active and used < mx else "🔴"
-        text += f"{status} <code>{code}</code> — {amount:g} ⭐ | {used}/{mx}\n"
+        text += f"{status} <code>{code}</code> — {amount} ⭐ | {used}/{mx}\n"
     await call.message.answer(text, parse_mode="HTML")
 
 
@@ -2126,11 +1846,7 @@ async def stats(call: CallbackQuery):
     for i, (uid, uname, bal) in enumerate(top_bal, 1):
         prefix = medals[i - 1] if i <= 3 else f"{i}."
         name = f"@{uname}" if uname else f"ID{uid}"
-        try:
-            bal_str = f"{float(bal):g}"
-        except Exception:
-            bal_str = str(bal)
-        bal_lines += f"{prefix} {name} — <b>{bal_str}</b> ⭐\n"
+        bal_lines += f"{prefix} {name} — <b>{bal}</b> ⭐\n"
 
     ref_lines = ""
     for i, (uid, uname, refs) in enumerate(top_refs, 1):
@@ -2142,13 +1858,13 @@ async def stats(call: CallbackQuery):
         f"📊 <b>СТАТИСТИКА</b>\n\n"
         f"👥 Всего юзеров: <b>{s['total']}</b>\n"
         f"📅 Новых сегодня: <b>{s['today']}</b>\n"
-        f"💰 Общий баланс: <b>{float(s['total_balance']):g}</b> ⭐\n"
-        f"💖 Прошли 5/5: <b>{s['total_refs']}</b>\n\n"
+        f"💰 Общий баланс: <b>{s['total_balance']}</b> ⭐\n"
+        f"👥 Подтверждённых рефералов: <b>{s['total_refs']}</b>\n\n"
         f"📋 <b>Заявки на вывод:</b>\n"
         f"   ⏳ В ожидании: <b>{s['pending']}</b>\n"
         f"   ✅ Выполнено: <b>{s['done']}</b>\n"
         f"   ❌ Отклонено: <b>{s['rejected']}</b>\n"
-        f"   💫 Выдано звёзд: <b>{float(s['total_stars']):g}</b>\n\n"
+        f"   💫 Выдано звёзд: <b>{s['total_stars']}</b>\n\n"
         f"🏆 <b>Топ-10 по балансу:</b>\n{bal_lines or '   —'}\n"
         f"👥 <b>Топ-10 по рефералам:</b>\n{ref_lines or '   —'}"
     )
@@ -2164,9 +1880,10 @@ async def settings(call: CallbackQuery):
         return
     await call.message.edit_text(
         f"⚙️ <b>НАСТРОЙКИ</b>\n\n"
+        f"👥 Бонус за реферала: <b>{get_setting('ref_bonus')}</b> ⭐\n"
         f"🎁 Ежедневный бонус: <b>{get_setting('daily_bonus')}</b> ⭐\n"
         f"💸 Минимум вывода: <b>{get_setting('min_withdraw')}</b> ⭐\n"
-        f"✏️ Текст под меню: <i>{get_setting('welcome_text')}</i>",
+        f"✏️ Текст под меню: {get_setting('welcome_text')}",
         reply_markup=settings_kb(), parse_mode="HTML")
 
 
@@ -2176,6 +1893,7 @@ async def set_value_ask(call: CallbackQuery, state: FSMContext):
         return
     key = call.data.split(":")[1]
     prompts = {
+        "ref_bonus": "👥 Бонус за реферала (число):",
         "daily_bonus": "🎁 Ежедневный бонус (число):",
         "min_withdraw": "💸 Минимум вывода (число):",
         "welcome_text": "✏️ Текст под меню:",
@@ -2194,9 +1912,9 @@ async def set_value_save(message: Message, state: FSMContext):
     data = await state.get_data()
     key = data.get("set_key")
     value = message.text.strip()
-    if key in ("daily_bonus", "min_withdraw"):
+    if key in ("ref_bonus", "daily_bonus", "min_withdraw"):
         try:
-            float(value.replace(",", "."))
+            int(value)
         except Exception:
             await message.answer("⚠️ Нужно число.")
             return
@@ -2232,7 +1950,7 @@ async def backup_cmd(message: Message):
         await message.answer_document(file, caption=(
             f"📦 <b>Бэкап</b>\n\n"
             f"👥 Юзеров: <b>{len(data['users'])}</b>\n"
-            f"💖 Реф-прогрессов: <b>{len(data['ref_progress'])}</b>\n"
+            f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
             f"🎟 Промокодов: <b>{len(data['promos'])}</b>\n"
             f"💸 Заявок: <b>{len(data['withdrawals'])}</b>"), parse_mode="HTML")
     except Exception as e:
@@ -2269,40 +1987,38 @@ async def restore_doc(message: Message, state: FSMContext):
 
 
 # ================== ФОН: РЕФЕРАЛЬНЫЙ ВОРКЕР ==================
-async def ref_worker():
+async def referral_watcher():
     while True:
         try:
-            for uid, ref_id, done in get_refs_to_notify_5min():
-                if not ref_id:
-                    set_ref_notified(uid, "notified_5min")
-                    continue
-                display = get_user_display(uid).lstrip("@")
-                await _notify_referrer(ref_id, "ref_notify_5min", username=display)
-                set_ref_notified(uid, "notified_5min")
-
-            for uid, ref_id, done in get_refs_to_notify_10min():
-                if not ref_id:
-                    set_ref_notified(uid, "notified_10min")
-                    continue
+            for rid, user_id, referrer_id in get_refs_to_remind():
+                u = get_user(user_id)
+                uname = f"@{u[1]}" if u and u[1] else "друг"
                 try:
-                    need = int(get_setting("ref_tasks_required") or 5)
+                    await bot.send_message(referrer_id,
+                        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> '
+                        f'{uname} зашёл по твоей ссылке, но не забрал бонус.',
+                        parse_mode="HTML")
                 except Exception:
-                    need = 5
-                if done >= need:
-                    set_ref_notified(uid, "notified_10min")
-                    continue
-                display = get_user_display(uid).lstrip("@")
-                await _notify_referrer(ref_id, "ref_notify_10min",
-                                       username=display, done=done, need=need)
-                set_ref_notified(uid, "notified_10min")
+                    pass
+                mark_reminded(rid)
 
-            try:
-                days = int(get_setting("ref_deadline_days") or 7)
-            except Exception:
-                days = 7
-            expire_old_ref_progress(days)
+            expired = expire_old_referrals()
+            if expired:
+                grouped = {}
+                for user_id, referrer_id in expired:
+                    grouped.setdefault(referrer_id, []).append(user_id)
+                for referrer_id, users in grouped.items():
+                    lines = "\n".join([f"• ID <code>{uid}</code>" for uid in users])
+                    try:
+                        await bot.send_message(referrer_id,
+                            f'<tg-emoji emoji-id="5787192063099408213">🕗</tg-emoji> '
+                            f'<b>Прошло {REFERRAL_DAYS} дней.</b>\n'
+                            f'Друзья не забрали бонус:\n{lines}',
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
         except Exception as e:
-            print("ref_worker error:", e)
+            print("Watcher error:", e)
         await asyncio.sleep(60)
 
 
@@ -2338,7 +2054,7 @@ async def daily_backup():
                     caption=(f"📦 <b>Авто-бэкап</b>\n"
                              f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
                              f"👥 Юзеров: <b>{len(data['users'])}</b>\n"
-                             f"💖 Реф-прогрессов: <b>{len(data['ref_progress'])}</b>\n"
+                             f"👥 Рефералов: <b>{len(data['referrals'])}</b>\n"
                              f"💸 Заявок: <b>{len(data['withdrawals'])}</b>"),
                     parse_mode="HTML")
                 print("Авто-бэкап отправлен")
@@ -2356,7 +2072,7 @@ async def daily_backup():
 # ================== ЗАПУСК ==================
 async def main():
     init_db()
-    asyncio.create_task(ref_worker())
+    asyncio.create_task(referral_watcher())
     asyncio.create_task(daily_backup())
     print("Бот запущен")
     print(f"BOT_ID: {BOT_ID}")
