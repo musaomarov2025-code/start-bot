@@ -2,31 +2,44 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI
+from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI, get_setting as _gs
 
 
+def _btn(text, **kwargs):
+    """Обёртка над InlineKeyboardButton — можно передать style='success'."""
+    return InlineKeyboardButton(text=text, **kwargs)
+
+
+# ================== ГЛАВНОЕ МЕНЮ (Reply) ==================
 def main_menu():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
+        [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972"),
+         KeyboardButton(text="Задания", icon_custom_emoji_id="5427168083074628963")],
         [KeyboardButton(text="Вывести звёзды", icon_custom_emoji_id="6025976946083500432")],
-        [KeyboardButton(text="Задания", icon_custom_emoji_id="5427168083074628963"),
-         KeyboardButton(text="Профиль", icon_custom_emoji_id="5325971446625758812")],
+        [KeyboardButton(text="Профиль", icon_custom_emoji_id="5325971446625758812")],
     ])
 
 
+# ================== ЗАРАБОТАТЬ ==================
 def earn_kb(share_url):
+    btn_text = _gs("earn_btn") or "Пригласить друга"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пригласить друга", url=share_url, icon_custom_emoji_id="5258362837411045098")],
+        [InlineKeyboardButton(text=btn_text, url=share_url,
+                              icon_custom_emoji_id="5258362837411045098")],
     ])
 
 
+# ================== ПРОФИЛЬ ==================
 def profile_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_bonus", icon_custom_emoji_id="5449800250032143374")],
-        [InlineKeyboardButton(text="Ввести промокод", callback_data="enter_promo", icon_custom_emoji_id="5197468864102823838")],
+        [InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_bonus",
+                              icon_custom_emoji_id="5449800250032143374")],
+        [InlineKeyboardButton(text="Ввести промокод", callback_data="enter_promo",
+                              icon_custom_emoji_id="5197468864102823838")],
     ])
 
 
+# ================== ПОДАРКИ ==================
 def gifts_kb():
     buttons = []
     row = []
@@ -47,33 +60,72 @@ def gifts_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# ================== ЗАДАНИЕ ==================
 def task_kb(link, source="bh"):
+    go_text = _gs("task_btn_go") or "Перейти"
+    check_text = _gs("task_btn_check") or "Проверить"
+    skip_text = _gs("task_btn_skip") or "Пропустить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Перейти", url=link, icon_custom_emoji_id="5368733682917980020"),
-         InlineKeyboardButton(text="Пропустить", callback_data="task_skip", icon_custom_emoji_id="5260450573768990626")],
-        [InlineKeyboardButton(text="Подтвердить", callback_data=f"tc:{source}", icon_custom_emoji_id="6026257381678124710")],
+        [
+            InlineKeyboardButton(text=go_text, url=link,
+                                 icon_custom_emoji_id="5368733682917980020"),
+            InlineKeyboardButton(text=check_text, callback_data=f"tc:{source}",
+                                 icon_custom_emoji_id="6026257381678124710",
+                                 style="success"),
+        ],
+        [
+            InlineKeyboardButton(text=skip_text, callback_data="task_skip",
+                                 icon_custom_emoji_id="5260450573768990626"),
+        ],
     ])
 
 
+def task_done_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Обновить задания", callback_data="tasks_refresh",
+                              icon_custom_emoji_id="5920433463428650761")],
+    ])
+
+
+# ================== ОП НА СТАРТЕ ==================
+def op_start_kb():
+    sub_text = _gs("op_btn_sub") or "Подписаться"
+    done_text = _gs("op_btn_done") or "Я подписался"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=sub_text, callback_data="op_open",
+                              icon_custom_emoji_id="6026034017608930629")],
+        [InlineKeyboardButton(text=done_text, callback_data="op_check",
+                              icon_custom_emoji_id="6026257381678124710",
+                              style="success")],
+    ])
+
+
+# ================== БОНУС ==================
 def daily_bonus_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Забрать", callback_data="daily_claim", icon_custom_emoji_id="6026257381678124710")],
-        [InlineKeyboardButton(text="Назад", callback_data="daily_cancel", icon_custom_emoji_id="5258236805890710909")],
+        [InlineKeyboardButton(text="Забрать", callback_data="daily_claim",
+                              icon_custom_emoji_id="6026257381678124710",
+                              style="success")],
+        [InlineKeyboardButton(text="Назад", callback_data="daily_cancel",
+                              icon_custom_emoji_id="5258236805890710909")],
     ])
 
 
 def daily_back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="daily_back", icon_custom_emoji_id="5258236805890710909")],
+        [InlineKeyboardButton(text="Назад", callback_data="daily_back",
+                              icon_custom_emoji_id="5258236805890710909")],
     ])
 
 
 def promo_cancel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отмена", callback_data="promo_cancel", icon_custom_emoji_id="5210952531676504517")],
+        [InlineKeyboardButton(text="Отмена", callback_data="promo_cancel",
+                              icon_custom_emoji_id="5210952531676504517")],
     ])
 
 
+# ================== АДМИНКА ==================
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
@@ -83,6 +135,8 @@ def admin_kb():
         [InlineKeyboardButton(text="🎯 Задания Botohub", callback_data="tasks_menu"),
          InlineKeyboardButton(text="📌 Свои задания", callback_data="ctasks_menu")],
         [InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu"),
+         InlineKeyboardButton(text="🔒 ОП на старте", callback_data="op_menu")],
+        [InlineKeyboardButton(text="💖 Рефералка (5 заданий)", callback_data="ref_menu"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
@@ -93,6 +147,7 @@ def admin_kb():
     ])
 
 
+# --- Botohub ОП ---
 def bh_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -105,15 +160,19 @@ def bh_kb(enabled):
     ])
 
 
+# --- Задания Botohub ---
 def tasks_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Награда за задание", callback_data="tasks_edit_reward")],
+        [InlineKeyboardButton(text="✏️ Текст задания", callback_data="task_edit_text")],
+        [InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="task_edit_btns")],
         [InlineKeyboardButton(text=status, callback_data="tasks_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
+# --- Свои задания ---
 def ctasks_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить", callback_data="ctask_add")],
@@ -132,6 +191,7 @@ def ctask_type_kb():
     ])
 
 
+# --- Свои ОП ---
 def cop_kb(op_type):
     title = "входе" if op_type == "entry" else "выводе"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -150,13 +210,46 @@ def cop_type_kb():
     ])
 
 
-def admin_wd_kb(wid):
+# --- ОП на старте (меню) ---
+def op_menu_kb(enabled):
+    status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
-         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}")]
+        [InlineKeyboardButton(text="✏️ Текст", callback_data="op_edit_text")],
+        [InlineKeyboardButton(text="🔗 Ссылка канала", callback_data="op_edit_link")],
+        [InlineKeyboardButton(text="🔎 Цель проверки (или пусто = без проверки)", callback_data="op_edit_target")],
+        [InlineKeyboardButton(text=status, callback_data="op_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
+# --- Рефералка (5 заданий) ---
+def ref_menu_kb(enabled):
+    status = "🔴 Выключить" if enabled else "🟢 Включить"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Награда за 5/5", callback_data="ref_edit_bonus")],
+        [InlineKeyboardButton(text="🎯 Сколько заданий нужно", callback_data="ref_edit_required")],
+        [InlineKeyboardButton(text="📅 Дней на выполнение", callback_data="ref_edit_days")],
+        [InlineKeyboardButton(text="✏️ Текст «Заработать»", callback_data="ref_edit_earn_text")],
+        [InlineKeyboardButton(text="✏️ Уведомление: старт", callback_data="ref_edit_notify_start")],
+        [InlineKeyboardButton(text="✏️ Уведомление: 5 мин", callback_data="ref_edit_notify_5min")],
+        [InlineKeyboardButton(text="✏️ Уведомление: 10 мин", callback_data="ref_edit_notify_10min")],
+        [InlineKeyboardButton(text="✏️ Уведомление: 5/5", callback_data="ref_edit_notify_done")],
+        [InlineKeyboardButton(text=status, callback_data="ref_toggle")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+# --- Заявки ---
+def admin_wd_kb(wid):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}",
+                              style="success"),
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}",
+                              style="danger")],
+    ])
+
+
+# --- Приватка ---
 def priv_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="priv_edit_text")],
@@ -166,16 +259,19 @@ def priv_kb():
     ])
 
 
+# --- Рассылка ---
 def broadcast_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")],
+        [InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm",
+                              style="success")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back",
+                              style="danger")],
     ])
 
 
+# --- Настройки ---
 def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 Бонус за реферала", callback_data="set:ref_bonus")],
         [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="set:daily_bonus")],
         [InlineKeyboardButton(text="💸 Минимум вывода", callback_data="set:min_withdraw")],
         [InlineKeyboardButton(text="✏️ Текст под меню", callback_data="set:welcome_text")],
@@ -183,6 +279,7 @@ def settings_kb():
     ])
 
 
+# --- Промокоды ---
 def promos_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="promo_create")],
@@ -192,6 +289,7 @@ def promos_kb():
     ])
 
 
+# --- Юзер ---
 def user_view_kb(uid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Список рефералов", callback_data=f"user_refs:{uid}")],
