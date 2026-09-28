@@ -1,4 +1,5 @@
 import sqlite3
+import random
 from datetime import datetime, timedelta, date
 from config import DB, DEFAULTS, REFERRAL_DAYS, JOIN_REQUEST_HOURS
 
@@ -17,7 +18,6 @@ def init_db():
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, reward INTEGER DEFAULT 10, active INTEGER DEFAULT 1)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks_done (user_id INTEGER, task_id INTEGER, done_at TEXT, PRIMARY KEY (user_id, task_id))""")
 
-    # --- миграции ---
     cur.execute("PRAGMA table_info(custom_tasks)")
     cols = {r[1] for r in cur.fetchall()}
     if "check_type" not in cols:
@@ -25,9 +25,6 @@ def init_db():
     if "check_target" not in cols:
         cur.execute("ALTER TABLE custom_tasks ADD COLUMN check_target TEXT DEFAULT ''")
 
-    # === НОВЫЕ ТАБЛИЦЫ ===
-
-    # --- пройденные ОП юзера (Botohub + свои) ---
     cur.execute("""CREATE TABLE IF NOT EXISTS user_ops (
         user_id INTEGER,
         op_key TEXT,
@@ -35,7 +32,6 @@ def init_db():
         PRIMARY KEY (user_id, op_key)
     )""")
 
-    # --- рекламные метки ---
     cur.execute("""CREATE TABLE IF NOT EXISTS ad_sources (
         code TEXT PRIMARY KEY,
         owner_id INTEGER,
@@ -43,7 +39,6 @@ def init_db():
         created_at TEXT
     )""")
 
-    # --- юзеры, пришедшие по рекламной метке ---
     cur.execute("""CREATE TABLE IF NOT EXISTS ad_users (
         user_id INTEGER PRIMARY KEY,
         code TEXT,
@@ -55,14 +50,12 @@ def init_db():
         stars_earned INTEGER DEFAULT 0
     )""")
 
-    # --- промокоды с ОП (тип 'op') ---
     cur.execute("""CREATE TABLE IF NOT EXISTS promo_op_reqs (
         code TEXT,
         op_key TEXT,
         PRIMARY KEY (code, op_key)
     )""")
 
-    # миграция promos: добавляем колонки type и min/max для рандома
     cur.execute("PRAGMA table_info(promos)")
     cols = {r[1] for r in cur.fetchall()}
     if "p_type" not in cols:
@@ -356,7 +349,6 @@ def get_top_refs(limit=10):
 
 # ================== PROMOS ==================
 def create_promo(code, amount, max_uses, p_type="normal", amount_min=0, op_keys=None):
-    """p_type: 'normal' | 'op'. amount_min — для рандома. op_keys — список op_key для требования ОП."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
@@ -417,15 +409,12 @@ def user_used_promo(code, user_id):
 
 
 def _calc_promo_amount(amount, amount_min, p_type):
-    """Для type='op' и amount_min>0 — рандом. Иначе обычная сумма."""
     if p_type == "op" and amount_min and amount_min < amount:
-        import random
         return random.randint(amount_min, amount)
     return amount
 
 
 def activate_promo(code, user_id):
-    """Проверяет все условия, но НЕ начисляет. Возвращает (ok, msg, amount, is_op, need_ops)."""
     code = code.upper()
     promo = get_promo(code)
     if not promo:
@@ -440,14 +429,12 @@ def activate_promo(code, user_id):
 
     op_keys = get_promo_op_reqs(code)
     if p_type == "op" and op_keys:
-        # проверяем, подписан ли на всех
         passed = set(get_user_passed_ops(user_id))
         missing = [k for k in op_keys if k not in passed]
         if missing:
             calc = _calc_promo_amount(amount, amount_min, p_type)
             return True, "NEED_OP", calc, True, op_keys
 
-    # выдаём
     calc = _calc_promo_amount(amount, amount_min, p_type)
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -461,7 +448,6 @@ def activate_promo(code, user_id):
 
 
 def activate_promo_after_op(code, user_id):
-    """Начисляет награду после того, как ОП пройдены. Возвращает сумму."""
     code = code.upper()
     promo = get_promo(code)
     if not promo:
@@ -587,7 +573,7 @@ def mark_custom_task_done(user_id, task_id):
     conn.close()
 
 
-# ================== USER OPS (пройденные ОП) ==================
+# ================== USER OPS ==================
 def mark_op_passed(user_id, op_key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -615,7 +601,7 @@ def has_op_passed(user_id, op_key):
     return row is not None
 
 
-# ================== AD SOURCES (рекламные метки) ==================
+# ================== AD SOURCES ==================
 def add_ad_source(code, owner_id, owner_username=""):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -678,10 +664,8 @@ def mark_ad_user_blocked(user_id):
 
 
 def increment_ad_refs(user_id):
-    """Если юзер пришёл по ad-метке — увеличиваем счётчик рефералов его рефереру (если он тоже от ad)."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    # увеличиваем счётчик у того, по чьей ad-метке пришёл referrer
     cur.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,))
     r = cur.fetchone()
     if not r or not r[0]:
@@ -702,7 +686,6 @@ def add_ad_stars(user_id, amount):
 
 
 def get_ad_stats(code, since_iso=None):
-    """Возвращает словарь статистики по метке. Если since_iso — только юзеры с registered_at >= since_iso."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     if since_iso:
@@ -728,13 +711,8 @@ def get_ad_stats(code, since_iso=None):
     blocked = row[2] or 0
     refs = row[3] or 0
     stars = row[4] or 0
-    return {
-        "total": total,
-        "passed_op": passed_op,
-        "blocked": blocked,
-        "refs": refs,
-        "stars": stars,
-    }
+    return {"total": total, "passed_op": passed_op, "blocked": blocked,
+            "refs": refs, "stars": stars}
 
 
 def get_ad_source_by_owner(owner_id):
