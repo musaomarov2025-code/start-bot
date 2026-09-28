@@ -17,7 +17,7 @@ def init_db():
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, reward INTEGER DEFAULT 10, active INTEGER DEFAULT 1)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS custom_tasks_done (user_id INTEGER, task_id INTEGER, done_at TEXT, PRIMARY KEY (user_id, task_id))""")
 
-    # миграция custom_tasks
+    # --- миграции ---
     cur.execute("PRAGMA table_info(custom_tasks)")
     cols = {r[1] for r in cur.fetchall()}
     if "check_type" not in cols:
@@ -25,10 +25,56 @@ def init_db():
     if "check_target" not in cols:
         cur.execute("ALTER TABLE custom_tasks ADD COLUMN check_target TEXT DEFAULT ''")
 
+    # === НОВЫЕ ТАБЛИЦЫ ===
+
+    # --- пройденные ОП юзера (Botohub + свои) ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS user_ops (
+        user_id INTEGER,
+        op_key TEXT,
+        passed_at TEXT,
+        PRIMARY KEY (user_id, op_key)
+    )""")
+
+    # --- рекламные метки ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS ad_sources (
+        code TEXT PRIMARY KEY,
+        owner_id INTEGER,
+        owner_username TEXT,
+        created_at TEXT
+    )""")
+
+    # --- юзеры, пришедшие по рекламной метке ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS ad_users (
+        user_id INTEGER PRIMARY KEY,
+        code TEXT,
+        registered_at TEXT,
+        passed_op INTEGER DEFAULT 0,
+        passed_op_at TEXT,
+        blocked INTEGER DEFAULT 0,
+        refs_count INTEGER DEFAULT 0,
+        stars_earned INTEGER DEFAULT 0
+    )""")
+
+    # --- промокоды с ОП (тип 'op') ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS promo_op_reqs (
+        code TEXT,
+        op_key TEXT,
+        PRIMARY KEY (code, op_key)
+    )""")
+
+    # миграция promos: добавляем колонки type и min/max для рандома
+    cur.execute("PRAGMA table_info(promos)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "p_type" not in cols:
+        cur.execute("ALTER TABLE promos ADD COLUMN p_type TEXT DEFAULT 'normal'")
+    if "amount_min" not in cols:
+        cur.execute("ALTER TABLE promos ADD COLUMN amount_min INTEGER DEFAULT 0")
+
     conn.commit()
     conn.close()
 
 
+# ================== SETTINGS ==================
 def get_setting(key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -46,6 +92,7 @@ def set_setting(key, value):
     conn.close()
 
 
+# ================== USERS ==================
 def get_user(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -130,6 +177,7 @@ def get_all_user_ids():
     return [r[0] for r in rows]
 
 
+# ================== REFERRALS ==================
 def create_pending_referral(user_id, referrer_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -214,6 +262,7 @@ def mark_reminded(rid):
     conn.close()
 
 
+# ================== WITHDRAWALS ==================
 def create_withdrawal(user_id, amount, gift):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -261,6 +310,7 @@ def set_withdrawal_status(wid, status):
     conn.close()
 
 
+# ================== STATS ==================
 def get_stats():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -304,11 +354,18 @@ def get_top_refs(limit=10):
     return rows
 
 
-def create_promo(code, amount, max_uses):
+# ================== PROMOS ==================
+def create_promo(code, amount, max_uses, p_type="normal", amount_min=0, op_keys=None):
+    """p_type: 'normal' | 'op'. amount_min — для рандома. op_keys — список op_key для требования ОП."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active) VALUES (?, ?, ?, 0, 1)",
-                (code.upper(), amount, max_uses))
+    cur.execute(
+        "INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active, p_type, amount_min) "
+        "VALUES (?, ?, ?, 0, 1, ?, ?)",
+        (code.upper(), amount, max_uses, p_type, amount_min))
+    if op_keys:
+        for k in op_keys:
+            cur.execute("INSERT OR IGNORE INTO promo_op_reqs (code, op_key) VALUES (?, ?)", (code.upper(), k))
     conn.commit()
     conn.close()
 
@@ -316,16 +373,25 @@ def create_promo(code, amount, max_uses):
 def get_promo(code):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT code, amount, max_uses, used, active FROM promos WHERE code = ?", (code.upper(),))
+    cur.execute("SELECT code, amount, max_uses, used, active, p_type, amount_min FROM promos WHERE code = ?", (code.upper(),))
     row = cur.fetchone()
     conn.close()
     return row
 
 
+def get_promo_op_reqs(code):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT op_key FROM promo_op_reqs WHERE code = ?", (code.upper(),))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def list_promos():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT code, amount, max_uses, used, active FROM promos ORDER BY code")
+    cur.execute("SELECT code, amount, max_uses, used, active, p_type, amount_min FROM promos ORDER BY code")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -336,6 +402,7 @@ def delete_promo(code):
     cur = conn.cursor()
     cur.execute("DELETE FROM promos WHERE code = ?", (code.upper(),))
     cur.execute("DELETE FROM promo_uses WHERE code = ?", (code.upper(),))
+    cur.execute("DELETE FROM promo_op_reqs WHERE code = ?", (code.upper(),))
     conn.commit()
     conn.close()
 
@@ -349,29 +416,72 @@ def user_used_promo(code, user_id):
     return row is not None
 
 
+def _calc_promo_amount(amount, amount_min, p_type):
+    """Для type='op' и amount_min>0 — рандом. Иначе обычная сумма."""
+    if p_type == "op" and amount_min and amount_min < amount:
+        import random
+        return random.randint(amount_min, amount)
+    return amount
+
+
 def activate_promo(code, user_id):
+    """Проверяет все условия, но НЕ начисляет. Возвращает (ok, msg, amount, is_op, need_ops)."""
     code = code.upper()
     promo = get_promo(code)
     if not promo:
-        return False, "❌ Такого промокода не существует.", 0
-    c, amount, max_uses, used, active = promo
+        return False, "❌ Такого промокода не существует.", 0, False, []
+    c, amount, max_uses, used, active, p_type, amount_min = promo
     if not active:
-        return False, "❌ Промокод деактивирован.", 0
+        return False, "❌ Промокод деактивирован.", 0, False, []
     if used >= max_uses:
-        return False, "❌ Промокод больше не действует.", 0
+        return False, "❌ Промокод больше не действует.", 0, False, []
     if user_used_promo(code, user_id):
-        return False, "❌ Ты уже активировал этот промокод.", 0
+        return False, "❌ Ты уже активировал этот промокод.", 0, False, []
+
+    op_keys = get_promo_op_reqs(code)
+    if p_type == "op" and op_keys:
+        # проверяем, подписан ли на всех
+        passed = set(get_user_passed_ops(user_id))
+        missing = [k for k in op_keys if k not in passed]
+        if missing:
+            calc = _calc_promo_amount(amount, amount_min, p_type)
+            return True, "NEED_OP", calc, True, op_keys
+
+    # выдаём
+    calc = _calc_promo_amount(amount, amount_min, p_type)
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute("INSERT INTO promo_uses (code, user_id, used_at) VALUES (?, ?, ?)",
                 (code, user_id, datetime.now().isoformat()))
     cur.execute("UPDATE promos SET used = used + 1 WHERE code = ?", (code,))
-    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (calc, user_id))
     conn.commit()
     conn.close()
-    return True, f"✅ Промокод активирован! +{amount} ⭐", amount
+    return True, f"✅ Промокод активирован! +{calc} ⭐", calc, False, []
 
 
+def activate_promo_after_op(code, user_id):
+    """Начисляет награду после того, как ОП пройдены. Возвращает сумму."""
+    code = code.upper()
+    promo = get_promo(code)
+    if not promo:
+        return 0
+    c, amount, max_uses, used, active, p_type, amount_min = promo
+    if user_used_promo(code, user_id):
+        return 0
+    calc = _calc_promo_amount(amount, amount_min, p_type)
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO promo_uses (code, user_id, used_at) VALUES (?, ?, ?)",
+                (code, user_id, datetime.now().isoformat()))
+    cur.execute("UPDATE promos SET used = used + 1 WHERE code = ?", (code,))
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (calc, user_id))
+    conn.commit()
+    conn.close()
+    return calc
+
+
+# ================== CUSTOM OPS ==================
 def add_custom_op(title, link, op_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -397,6 +507,7 @@ def delete_custom_op(op_id):
     conn.close()
 
 
+# ================== BH REWARDS ==================
 def bh_reward_mark(user_id, link):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -415,14 +526,14 @@ def bh_reward_was_given(user_id, link):
     return row is not None
 
 
+# ================== CUSTOM TASKS ==================
 def add_custom_task(title, link, check_type="bot", check_target=""):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO custom_tasks (title, link, reward, active, check_type, check_target) "
         "VALUES (?, ?, 0, 1, ?, ?)",
-        (title, link, check_type, check_target),
-    )
+        (title, link, check_type, check_target))
     conn.commit()
     conn.close()
 
@@ -430,8 +541,7 @@ def add_custom_task(title, link, check_type="bot", check_target=""):
 def list_custom_tasks():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active, check_type, check_target "
-                "FROM custom_tasks ORDER BY id")
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target FROM custom_tasks ORDER BY id")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -440,8 +550,7 @@ def list_custom_tasks():
 def get_custom_task(task_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT id, title, link, reward, active, check_type, check_target "
-                "FROM custom_tasks WHERE id = ?", (task_id,))
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target FROM custom_tasks WHERE id = ?", (task_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -462,10 +571,8 @@ def get_next_custom_task(user_id):
     cur.execute(
         "SELECT id, title, link, reward, check_type, check_target FROM custom_tasks "
         "WHERE active = 1 AND id NOT IN "
-        "(SELECT task_id FROM custom_tasks_done WHERE user_id = ?) "
-        "ORDER BY id LIMIT 1",
-        (user_id,),
-    )
+        "(SELECT task_id FROM custom_tasks_done WHERE user_id = ?) ORDER BY id LIMIT 1",
+        (user_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -478,3 +585,162 @@ def mark_custom_task_done(user_id, task_id):
                 (user_id, task_id, datetime.now().isoformat()))
     conn.commit()
     conn.close()
+
+
+# ================== USER OPS (пройденные ОП) ==================
+def mark_op_passed(user_id, op_key):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO user_ops (user_id, op_key, passed_at) VALUES (?, ?, ?)",
+                (user_id, op_key, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_user_passed_ops(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT op_key FROM user_ops WHERE user_id = ?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def has_op_passed(user_id, op_key):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM user_ops WHERE user_id = ? AND op_key = ?", (user_id, op_key))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
+# ================== AD SOURCES (рекламные метки) ==================
+def add_ad_source(code, owner_id, owner_username=""):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO ad_sources (code, owner_id, owner_username, created_at) VALUES (?, ?, ?, ?)",
+                (code.lower(), owner_id, owner_username or "", datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_ad_source(code):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT code, owner_id, owner_username, created_at FROM ad_sources WHERE code = ?", (code.lower(),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def list_ad_sources():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT code, owner_id, owner_username, created_at FROM ad_sources ORDER BY created_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def delete_ad_source(code):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ad_sources WHERE code = ?", (code.lower(),))
+    conn.commit()
+    conn.close()
+
+
+def mark_ad_user(user_id, code):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO ad_users (user_id, code, registered_at) VALUES (?, ?, ?)",
+                (user_id, code.lower(), datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def mark_ad_user_op(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("UPDATE ad_users SET passed_op = 1, passed_op_at = ? WHERE user_id = ? AND passed_op = 0",
+                (datetime.now().isoformat(), user_id))
+    conn.commit()
+    conn.close()
+
+
+def mark_ad_user_blocked(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("UPDATE ad_users SET blocked = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def increment_ad_refs(user_id):
+    """Если юзер пришёл по ad-метке — увеличиваем счётчик рефералов его рефереру (если он тоже от ad)."""
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    # увеличиваем счётчик у того, по чьей ad-метке пришёл referrer
+    cur.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,))
+    r = cur.fetchone()
+    if not r or not r[0]:
+        conn.close()
+        return
+    referrer_id = r[0]
+    cur.execute("UPDATE ad_users SET refs_count = refs_count + 1 WHERE user_id = ?", (referrer_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_ad_stars(user_id, amount):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("UPDATE ad_users SET stars_earned = stars_earned + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+
+def get_ad_stats(code, since_iso=None):
+    """Возвращает словарь статистики по метке. Если since_iso — только юзеры с registered_at >= since_iso."""
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    if since_iso:
+        cur.execute("""SELECT COUNT(*),
+                              SUM(CASE WHEN passed_op=1 THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
+                              COALESCE(SUM(refs_count),0),
+                              COALESCE(SUM(stars_earned),0)
+                       FROM ad_users WHERE code = ? AND registered_at >= ?""",
+                    (code.lower(), since_iso))
+    else:
+        cur.execute("""SELECT COUNT(*),
+                              SUM(CASE WHEN passed_op=1 THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
+                              COALESCE(SUM(refs_count),0),
+                              COALESCE(SUM(stars_earned),0)
+                       FROM ad_users WHERE code = ?""",
+                    (code.lower(),))
+    row = cur.fetchone()
+    conn.close()
+    total = row[0] or 0
+    passed_op = row[1] or 0
+    blocked = row[2] or 0
+    refs = row[3] or 0
+    stars = row[4] or 0
+    return {
+        "total": total,
+        "passed_op": passed_op,
+        "blocked": blocked,
+        "refs": refs,
+        "stars": stars,
+    }
+
+
+def get_ad_source_by_owner(owner_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT code FROM ad_sources WHERE owner_id = ? LIMIT 1", (owner_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
