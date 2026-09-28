@@ -346,7 +346,41 @@ async def _go_to_main(chat_id, user_id):
     await _send_earn_screen(chat_id, user_id)
 
 
-# ============ СТАРТ ============
+def import_users_from_json(data):
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    count = 0
+    for u in data.get("users", []):
+        cur.execute("INSERT OR REPLACE INTO users (user_id, username, balance, last_bonus, referrer_id, registered_at) VALUES (?,?,?,?,?,?)",
+                    (u["user_id"], u.get("username"), u.get("balance", 0),
+                     u.get("last_bonus"), u.get("referrer_id"), u.get("registered_at")))
+        count += 1
+    cur.execute("DELETE FROM referrals")
+    for r in data.get("referrals", []):
+        cur.execute("INSERT INTO referrals (user_id, referrer_id, created_at, status) VALUES (?,?,?,?)",
+                    (r["user_id"], r["referrer_id"], r.get("created_at"), r.get("status", "pending")))
+    for p in data.get("promos", []):
+        cur.execute("INSERT OR REPLACE INTO promos (code, amount, max_uses, used, active, p_type, amount_min) VALUES (?,?,?,?,?,?,?)",
+                    (p["code"], p["amount"], p["max_uses"], p.get("used", 0),
+                     p.get("active", 1), p.get("p_type", "normal"), p.get("amount_min", 0)))
+    cur.execute("DELETE FROM withdrawals")
+    for w in data.get("withdrawals", []):
+        cur.execute("INSERT INTO withdrawals (user_id, amount, gift, status, created_at) VALUES (?,?,?,?,?)",
+                    (w["user_id"], w["amount"], w.get("gift"), w.get("status", "pending"), w.get("created_at")))
+    cur.execute("DELETE FROM custom_ops")
+    for co in data.get("custom_ops", []):
+        cur.execute("INSERT INTO custom_ops (title, link, type, active) VALUES (?,?,?,?)",
+                    (co["title"], co["link"], co["type"], co.get("active", 1)))
+    cur.execute("DELETE FROM custom_tasks")
+    for ct in data.get("custom_tasks", []):
+        cur.execute("INSERT INTO custom_tasks (title, link, reward, active, check_type, check_target) VALUES (?,?,?,?,?,?)",
+                    (ct["title"], ct["link"], ct.get("reward", 0), ct.get("active", 1),
+                     ct.get("check_type", "bot"), ct.get("check_target", "")))
+    conn.commit()
+    conn.close()
+    return count
+    # ============ СТАРТ ============
 def _parse_start_arg(arg):
     if not arg:
         return None, None
