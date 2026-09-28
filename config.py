@@ -37,18 +37,23 @@ GIFTS_EMOJI = {
 GIFTS_ORDER = ["bear", "heart", "gift", "rose", "cake", "rocket", "ring", "diamond"]
 
 DEFAULTS = {
+    # --- базовые ---
     "ref_bonus": "6",
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
+
+    # --- приватка ---
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
     "priv_buttons": (
         "👦 Я парень - https://t.me/RuletkaMatchBot?start=savikpriv2509\n"
         "👧 Я девушка - https://t.me/RuletkaMatchBot?start=savikpriv2509"
     ),
+
+    # --- Botohub ОП ---
     "botohub_enabled": "1",
-    "botohub_entry_count": "6",
+    "botohub_entry_count": "2",      # сколько каналов брать от Botohub на входе
     "botohub_withdraw_count": "6",
     "botohub_text": (
         '<tg-emoji emoji-id="5258093637450866522">🔒</tg-emoji> Для использования бота подпишись на каналы ниже\n\n'
@@ -56,15 +61,23 @@ DEFAULTS = {
         '"<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> Я Подписался"'
     ),
     "botohub_btn_text": "Подписаться",
+
+    # --- Свои ОП на входе (custom_ops.entry) ---
+    "op_custom_entry_count": "0",     # 0 = показывать все свои ОП
+
+    # --- Задания ---
     "tasks_enabled": "1",
     "task_reward": "1",
 
+    # --- Рассылка ---
+    "broadcast_batch_default": "1000",  # по умолчанию сколько отправлять
+
     # --- Автопост ---
     "autopost_enabled": "0",
-    "autopost_chats": "[]",         # JSON массив ID чатов
-    "autopost_texts": "[]",         # JSON массив текстов
-    "autopost_interval": "5",       # в минутах
-    "autopost_media_type": "",      # "" / "photo" / "video"
-    "autopost_media_id": "",        # file_id от Telegram
-    "autopost_buttons": "",         # формат как priv_buttons
+    "autopost_chats": "[]",
+    "autopost_texts": "[]",
+    "autopost_interval": "5",
+    "autopost_media_type": "",
+    "autopost_media_id": "",
+    "autopost_buttons": "",
 }
