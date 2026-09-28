@@ -91,15 +91,14 @@ def promo_cancel_kb():
 
 
 # ================== ОП-ЭКРАН (Botohub + свои) ==================
-def op_screen_kb(items, custom_count=0):
+def op_screen_kb(items, confirm_callback="op_check"):
     """
-    items: список кортежей (title, url, op_key, already_passed)
-    custom_count: сколько из items — свои ОП (для нумерации в конце)
-    Кнопка "Я подписался" → callback 'op_check'
+    items: список кортежей (op_key, title, url, passed)
+    confirm_callback: 'op_check' (вход в бот) или 'op_check_wd' (вывод)
     """
     buttons = []
     row = []
-    for i, (title, url, op_key, passed) in enumerate(items, 1):
+    for i, (op_key, title, url, passed) in enumerate(items, 1):
         prefix = "✅ " if passed else ""
         row.append(InlineKeyboardButton(
             text=f"{prefix}{title} {i}",
@@ -111,7 +110,7 @@ def op_screen_kb(items, custom_count=0):
     if row:
         buttons.append(row)
     buttons.append([InlineKeyboardButton(
-        text="Я подписался", callback_data="op_check",
+        text="Я подписался", callback_data=confirm_callback,
         icon_custom_emoji_id="6026257381678124710")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -218,7 +217,7 @@ def priv_kb():
     ])
 
 
-# ================== РАССЫЛКА (меню) ==================
+# ================== РАССЫЛКА ==================
 def broadcast_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
@@ -281,11 +280,6 @@ def promo_type_kb():
 
 
 def promo_op_select_kb(all_ops, selected, code):
-    """
-    all_ops: список кортежей (op_key, label) — например ('bh:https://...', '📢 Botohub: название')
-    selected: set уже выбранных op_key
-    code: код промокода, чтобы callback не запутался
-    """
     buttons = []
     for op_key, label in all_ops:
         mark = "✅ " if op_key in selected else "⬜ "
@@ -300,7 +294,7 @@ def promo_op_select_kb(all_ops, selected, code):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ================== РЕКЛАМА (ad_sources) ==================
+# ================== РЕКЛАМА ==================
 def ad_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить метку", callback_data="ad_add")],
