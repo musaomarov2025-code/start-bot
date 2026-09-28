@@ -5,6 +5,7 @@ from aiogram.types import (
 from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI
 
 
+# ================== ГЛАВНОЕ МЕНЮ ==================
 def main_menu():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
@@ -14,6 +15,7 @@ def main_menu():
     ])
 
 
+# ================== ЗАРАБОТАТЬ ==================
 def earn_kb(share_url):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Пригласить друга", url=share_url,
@@ -21,6 +23,7 @@ def earn_kb(share_url):
     ])
 
 
+# ================== ПРОФИЛЬ ==================
 def profile_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_bonus",
@@ -30,6 +33,7 @@ def profile_kb():
     ])
 
 
+# ================== ПОДАРКИ ==================
 def gifts_kb():
     buttons = []
     row = []
@@ -50,6 +54,7 @@ def gifts_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# ================== ЗАДАНИЕ ==================
 def task_kb(link, source="bh"):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Перейти", url=link,
@@ -61,6 +66,7 @@ def task_kb(link, source="bh"):
     ])
 
 
+# ================== БОНУС ==================
 def daily_bonus_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Забрать", callback_data="daily_claim",
@@ -84,6 +90,33 @@ def promo_cancel_kb():
     ])
 
 
+# ================== ОП-ЭКРАН (Botohub + свои) ==================
+def op_screen_kb(items, custom_count=0):
+    """
+    items: список кортежей (title, url, op_key, already_passed)
+    custom_count: сколько из items — свои ОП (для нумерации в конце)
+    Кнопка "Я подписался" → callback 'op_check'
+    """
+    buttons = []
+    row = []
+    for i, (title, url, op_key, passed) in enumerate(items, 1):
+        prefix = "✅ " if passed else ""
+        row.append(InlineKeyboardButton(
+            text=f"{prefix}{title} {i}",
+            url=url,
+            icon_custom_emoji_id="5253742260054409879"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton(
+        text="Я подписался", callback_data="op_check",
+        icon_custom_emoji_id="6026257381678124710")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ================== АДМИНКА ==================
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
@@ -94,28 +127,32 @@ def admin_kb():
          InlineKeyboardButton(text="📌 Свои задания", callback_data="ctasks_menu")],
         [InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast"),
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast_menu"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
-        [InlineKeyboardButton(text="💸 Начислить", callback_data="give_start"),
-         InlineKeyboardButton(text="👥 Юзер", callback_data="user_find")],
-        [InlineKeyboardButton(text="📢 Автопост", callback_data="autopost_menu"),
-         InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-        [InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
+        [InlineKeyboardButton(text="📊 Реклама", callback_data="ad_menu"),
+         InlineKeyboardButton(text="💸 Начислить", callback_data="give_start")],
+        [InlineKeyboardButton(text="👥 Юзер", callback_data="user_find"),
+         InlineKeyboardButton(text="📢 Автопост", callback_data="autopost_menu")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+         InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
 
 
+# ================== BOTOHUB ОП ==================
 def bh_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст сообщения", callback_data="bh_edit_text"),
          InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="bh_edit_btn")],
-        [InlineKeyboardButton(text="📥 ОП на входе", callback_data="bh_edit_entry"),
+        [InlineKeyboardButton(text="📥 ОП на входе (кол-во)", callback_data="bh_edit_entry"),
          InlineKeyboardButton(text="💸 ОП на выводе", callback_data="bh_edit_wd")],
+        [InlineKeyboardButton(text="📌 Свои ОП (кол-во)", callback_data="bh_edit_custom")],
         [InlineKeyboardButton(text=status, callback_data="bh_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
+# ================== ЗАДАНИЯ BOTOHUB ==================
 def tasks_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -125,6 +162,7 @@ def tasks_kb(enabled):
     ])
 
 
+# ================== СВОИ ЗАДАНИЯ ==================
 def ctasks_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить", callback_data="ctask_add")],
@@ -143,6 +181,7 @@ def ctask_type_kb():
     ])
 
 
+# ================== СВОИ ОП ==================
 def cop_kb(op_type):
     title = "входе" if op_type == "entry" else "выводе"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -161,6 +200,7 @@ def cop_type_kb():
     ])
 
 
+# ================== ЗАЯВКИ ==================
 def admin_wd_kb(wid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
@@ -168,6 +208,7 @@ def admin_wd_kb(wid):
     ])
 
 
+# ================== ПРИВАТКА ==================
 def priv_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="priv_edit_text")],
@@ -177,13 +218,40 @@ def priv_kb():
     ])
 
 
-def broadcast_kb():
+# ================== РАССЫЛКА (меню) ==================
+def broadcast_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")],
+        [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
+        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
+         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
+        [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
+        [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="bc_preview")],
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="bc_send")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
+def broadcast_confirm_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Начать", callback_data="bc_start"),
+         InlineKeyboardButton(text="❌ Отмена", callback_data="admin_back")],
+    ])
+
+
+def broadcast_preview_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
+        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
+         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
+        [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="bc_send")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="broadcast_menu")],
+    ])
+
+
+# ================== НАСТРОЙКИ ==================
 def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Бонус за реферала", callback_data="set:ref_bonus")],
@@ -194,6 +262,7 @@ def settings_kb():
     ])
 
 
+# ================== ПРОМОКОДЫ ==================
 def promos_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="promo_create")],
@@ -203,26 +272,45 @@ def promos_kb():
     ])
 
 
-def user_view_kb(uid):
+def promo_type_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 Список рефералов", callback_data=f"user_refs:{uid}")],
+        [InlineKeyboardButton(text="💫 Обычный", callback_data="pcreate_type:normal")],
+        [InlineKeyboardButton(text="📢 За ОП", callback_data="pcreate_type:op")],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_back")],
+    ])
+
+
+def promo_op_select_kb(all_ops, selected, code):
+    """
+    all_ops: список кортежей (op_key, label) — например ('bh:https://...', '📢 Botohub: название')
+    selected: set уже выбранных op_key
+    code: код промокода, чтобы callback не запутался
+    """
+    buttons = []
+    for op_key, label in all_ops:
+        mark = "✅ " if op_key in selected else "⬜ "
+        buttons.append([InlineKeyboardButton(
+            text=f"{mark}{label}",
+            callback_data=f"pcreate_toggle:{code}:{op_key}"
+        )])
+    buttons.append([InlineKeyboardButton(
+        text="✅ Готово", callback_data=f"pcreate_done:{code}")])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Отмена", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ================== РЕКЛАМА (ad_sources) ==================
+def ad_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить метку", callback_data="ad_add")],
+        [InlineKeyboardButton(text="📜 Список меток", callback_data="ad_list")],
+        [InlineKeyboardButton(text="🗑 Удалить метку", callback_data="ad_del")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
-def back_admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
-def stats_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
+# ================== АВТОПОСТ ==================
 def autopost_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -252,4 +340,25 @@ def autopost_chats_kb():
         [InlineKeyboardButton(text="📜 Показать все", callback_data="ap_chat_show")],
         [InlineKeyboardButton(text="🗑 Удалить чат", callback_data="ap_chat_del")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="autopost_menu")],
+    ])
+
+
+# ================== ЮЗЕР ==================
+def user_view_kb(uid):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Список рефералов", callback_data=f"user_refs:{uid}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def back_admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def stats_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
