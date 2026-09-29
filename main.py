@@ -345,7 +345,50 @@ async def _go_to_main(chat_id, user_id):
     await bot.send_message(chat_id, get_setting("welcome_text"), reply_markup=main_menu())
     await _send_earn_screen(chat_id, user_id)
 
-
+def export_users_to_json():
+    import sqlite3
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, username, balance, last_bonus, referrer_id, registered_at FROM users")
+    users = [{"user_id": r[0], "username": r[1], "balance": r[2],
+              "last_bonus": r[3], "referrer_id": r[4], "registered_at": r[5]}
+             for r in cur.fetchall()]
+    cur.execute("SELECT user_id, referrer_id, created_at, status FROM referrals")
+    referrals = [{"user_id": r[0], "referrer_id": r[1], "created_at": r[2], "status": r[3]}
+                 for r in cur.fetchall()]
+    cur.execute("SELECT code, amount, max_uses, used, active, p_type, amount_min FROM promos")
+    promos = [{"code": r[0], "amount": r[1], "max_uses": r[2], "used": r[3],
+               "active": r[4], "p_type": r[5], "amount_min": r[6]}
+              for r in cur.fetchall()]
+    cur.execute("SELECT user_id, amount, gift, status, created_at FROM withdrawals")
+    withdrawals = [{"user_id": r[0], "amount": r[1], "gift": r[2],
+                    "status": r[3], "created_at": r[4]}
+                   for r in cur.fetchall()]
+    cur.execute("SELECT key, value FROM settings")
+    settings = {r[0]: r[1] for r in cur.fetchall()}
+    cur.execute("SELECT id, title, link, type, active FROM custom_ops")
+    custom_ops = [{"id": r[0], "title": r[1], "link": r[2], "type": r[3], "active": r[4]}
+                  for r in cur.fetchall()]
+    cur.execute("SELECT id, title, link, reward, active, check_type, check_target FROM custom_tasks")
+    custom_tasks = [{"id": r[0], "title": r[1], "link": r[2], "reward": r[3], "active": r[4],
+                     "check_type": r[5], "check_target": r[6]} for r in cur.fetchall()]
+    try:
+        cur.execute("SELECT user_id, op_key, passed_at FROM user_ops")
+        user_ops = [{"user_id": r[0], "op_key": r[1], "passed_at": r[2]} for r in cur.fetchall()]
+    except Exception:
+        user_ops = []
+    try:
+        cur.execute("SELECT code, owner_id, owner_username, created_at FROM ad_sources")
+        ad_sources = [{"code": r[0], "owner_id": r[1], "owner_username": r[2], "created_at": r[3]}
+                      for r in cur.fetchall()]
+    except Exception:
+        ad_sources = []
+    conn.close()
+    return {"exported_at": datetime.now().isoformat(),
+            "users": users, "referrals": referrals, "promos": promos,
+            "withdrawals": withdrawals, "settings": settings,
+            "custom_ops": custom_ops, "custom_tasks": custom_tasks,
+            "user_ops": user_ops, "ad_sources": ad_sources}
 def import_users_from_json(data):
     import sqlite3
     conn = sqlite3.connect(DB)
