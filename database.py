@@ -63,6 +63,39 @@ def init_db():
     if "amount_min" not in cols:
         cur.execute("ALTER TABLE promos ADD COLUMN amount_min INTEGER DEFAULT 0")
 
+    # --- миграции ad_sources ---
+    cur.execute("PRAGMA table_info(ad_sources)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "clicks" not in cols:
+        cur.execute("ALTER TABLE ad_sources ADD COLUMN clicks INTEGER DEFAULT 0")
+    if "price_per_click" not in cols:
+        cur.execute("ALTER TABLE ad_sources ADD COLUMN price_per_click INTEGER DEFAULT 0")
+
+    # --- миграции ad_users ---
+    cur.execute("PRAGMA table_info(ad_users)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "registered" not in cols:
+        cur.execute("ALTER TABLE ad_users ADD COLUMN registered INTEGER DEFAULT 0")
+    if "is_premium" not in cols:
+        cur.execute("ALTER TABLE ad_users ADD COLUMN is_premium INTEGER DEFAULT 0")
+
+    # --- дневные логи переходов по метке ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS ad_daily (
+        code TEXT,
+        date TEXT,
+        clicks INTEGER DEFAULT 0,
+        users_new INTEGER DEFAULT 0,
+        PRIMARY KEY (code, date)
+    )""")
+
+    # --- ожидание 3 друзей при выводе ---
+    cur.execute("""CREATE TABLE IF NOT EXISTS withdraw_waiting (
+        user_id INTEGER PRIMARY KEY,
+        gift_key TEXT,
+        friends_base INTEGER,
+        created_at TEXT
+    )""")
+
     conn.commit()
     conn.close()
 
@@ -602,11 +635,11 @@ def has_op_passed(user_id, op_key):
 
 
 # ================== AD SOURCES ==================
-def add_ad_source(code, owner_id, owner_username=""):
+def add_ad_source(code, owner_id, owner_username="", price_per_click=0):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO ad_sources (code, owner_id, owner_username, created_at) VALUES (?, ?, ?, ?)",
-                (code.lower(), owner_id, owner_username or "", datetime.now().isoformat()))
+    cur.execute("INSERT OR REPLACE INTO ad_sources (code, owner_id, owner_username, created_at, price_per_click) VALUES (?, ?, ?, ?, ?)",
+                (code.lower(), owner_id, owner_username or "", datetime.now().isoformat(), price_per_click))
     conn.commit()
     conn.close()
 
@@ -614,7 +647,7 @@ def add_ad_source(code, owner_id, owner_username=""):
 def get_ad_source(code):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT code, owner_id, owner_username, created_at FROM ad_sources WHERE code = ?", (code.lower(),))
+    cur.execute("SELECT code, owner_id, owner_username, created_at, clicks, price_per_click FROM ad_sources WHERE code = ?", (code.lower(),))
     row = cur.fetchone()
     conn.close()
     return row
@@ -623,7 +656,7 @@ def get_ad_source(code):
 def list_ad_sources():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT code, owner_id, owner_username, created_at FROM ad_sources ORDER BY created_at DESC")
+    cur.execute("SELECT code, owner_id, owner_username, created_at, clicks, price_per_click FROM ad_sources ORDER BY created_at DESC")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -633,15 +666,33 @@ def delete_ad_source(code):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute("DELETE FROM ad_sources WHERE code = ?", (code.lower(),))
+    cur.execute("DELETE FROM ad_users WHERE code = ?", (code.lower(),))
+    cur.execute("DELETE FROM ad_daily WHERE code = ?", (code.lower(),))
     conn.commit()
     conn.close()
 
 
-def mark_ad_user(user_id, code):
+def increment_ad_click(code, is_new_user):
+    today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO ad_users (user_id, code, registered_at) VALUES (?, ?, ?)",
-                (user_id, code.lower(), datetime.now().isoformat()))
+    cur.execute("UPDATE ad_sources SET clicks = clicks + 1 WHERE code = ?", (code.lower(),))
+    cur.execute("INSERT OR IGNORE INTO ad_daily (code, date, clicks, users_new) VALUES (?, ?, 0, 0)",
+                (code.lower(), today))
+    cur.execute("UPDATE ad_daily SET clicks = clicks + 1 WHERE code = ? AND date = ?",
+                (code.lower(), today))
+    if is_new_user:
+        cur.execute("UPDATE ad_daily SET users_new = users_new + 1 WHERE code = ? AND date = ?",
+                    (code.lower(), today))
+    conn.commit()
+    conn.close()
+
+
+def mark_ad_user(user_id, code, registered=0, is_premium=0):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO ad_users (user_id, code, registered_at, registered, is_premium) VALUES (?, ?, ?, ?, ?)",
+                (user_id, code.lower(), datetime.now().isoformat(), registered, is_premium))
     conn.commit()
     conn.close()
 
@@ -685,40 +736,91 @@ def add_ad_stars(user_id, amount):
     conn.close()
 
 
-def get_ad_stats(code, since_iso=None):
+def get_ad_stats_period(code, start_iso=None, end_iso=None):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    if since_iso:
-        cur.execute("""SELECT COUNT(*),
-                              SUM(CASE WHEN passed_op=1 THEN 1 ELSE 0 END),
-                              SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
-                              COALESCE(SUM(refs_count),0),
-                              COALESCE(SUM(stars_earned),0)
-                       FROM ad_users WHERE code = ? AND registered_at >= ?""",
-                    (code.lower(), since_iso))
+
+    if start_iso and end_iso:
+        cur.execute("""SELECT
+            COUNT(*),
+            SUM(CASE WHEN registered=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN passed_op=1 AND passed_op_at >= ? AND passed_op_at < ? THEN 1 ELSE 0 END),
+            SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN is_premium=1 THEN 1 ELSE 0 END),
+            COALESCE(SUM(stars_earned),0)
+            FROM ad_users WHERE code = ? AND registered_at >= ? AND registered_at < ?""",
+                    (start_iso, end_iso, code.lower(), start_iso, end_iso))
     else:
-        cur.execute("""SELECT COUNT(*),
-                              SUM(CASE WHEN passed_op=1 THEN 1 ELSE 0 END),
-                              SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
-                              COALESCE(SUM(refs_count),0),
-                              COALESCE(SUM(stars_earned),0)
-                       FROM ad_users WHERE code = ?""",
-                    (code.lower(),))
+        cur.execute("""SELECT
+            COUNT(*),
+            SUM(CASE WHEN registered=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN passed_op=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN blocked=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN is_premium=1 THEN 1 ELSE 0 END),
+            COALESCE(SUM(stars_earned),0)
+            FROM ad_users WHERE code = ?""", (code.lower(),))
     row = cur.fetchone()
+    users = row[0] or 0
+    registered = row[1] or 0
+    op = row[2] or 0
+    blocked = row[3] or 0
+    premium = row[4] or 0
+    stars = row[5] or 0
+
+    if start_iso and end_iso:
+        start_date = start_iso[:10]
+        end_date = end_iso[:10]
+        cur.execute("SELECT COALESCE(SUM(clicks),0) FROM ad_daily WHERE code = ? AND date >= ? AND date < ?",
+                    (code.lower(), start_date, end_date))
+    else:
+        cur.execute("SELECT COALESCE(clicks,0) FROM ad_sources WHERE code = ?", (code.lower(),))
+    clicks_row = cur.fetchone()
+    clicks = clicks_row[0] if clicks_row else 0
+
     conn.close()
-    total = row[0] or 0
-    passed_op = row[1] or 0
-    blocked = row[2] or 0
-    refs = row[3] or 0
-    stars = row[4] or 0
-    return {"total": total, "passed_op": passed_op, "blocked": blocked,
-            "refs": refs, "stars": stars}
+    return {
+        "clicks": clicks,
+        "users": users,
+        "registered": registered,
+        "op": op,
+        "blocked": blocked,
+        "premium": premium,
+        "stars": stars,
+    }
 
 
-def get_ad_source_by_owner(owner_id):
+# ================== WITHDRAW WAITING ==================
+def set_waiting_withdraw(user_id, gift_key, friends_base):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT code FROM ad_sources WHERE owner_id = ? LIMIT 1", (owner_id,))
+    cur.execute("INSERT OR REPLACE INTO withdraw_waiting (user_id, gift_key, friends_base, created_at) VALUES (?, ?, ?, ?)",
+                (user_id, gift_key, friends_base, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_waiting_withdraw(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, gift_key, friends_base, created_at FROM withdraw_waiting WHERE user_id = ?",
+                (user_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else None
+    return row
+
+
+def delete_waiting_withdraw(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM withdraw_waiting WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_waiting_withdraw_users():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM withdraw_waiting")
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
