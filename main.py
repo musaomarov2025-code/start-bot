@@ -41,8 +41,8 @@ from database import (
     get_next_custom_task, mark_custom_task_done,
     mark_op_passed, get_user_passed_ops, has_op_passed,
     add_ad_source, get_ad_source, list_ad_sources, delete_ad_source,
-    mark_ad_user, mark_ad_user_op, 
-increment_ad_refs, add_ad_stars, get_ad_stats_period,
+    mark_ad_user, mark_ad_user_op, mark_ad_user_blocked,
+    increment_ad_refs, add_ad_stars, get_ad_stats_period,
     increment_ad_click,
     set_waiting_withdraw, get_waiting_withdraw, delete_waiting_withdraw,
     get_all_waiting_withdraw_users,
@@ -67,6 +67,15 @@ BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 PENDING_PROMO = {}
 PENDING_WD = {}
+
+
+# ================== ХЕЛПЕР ==================
+def _smart_text(message):
+    """Если есть entities (жирный/прем-эмодзи) — html_text.
+       Если нет — text как есть (для ручного HTML)."""
+    if message.entities:
+        return message.html_text or message.text or ""
+    return message.text or ""
 
 
 # ================== FSM ==================
@@ -243,14 +252,12 @@ async def _get_botohub_pending(user_id):
 async def collect_op_items(user_id):
     passed_set = set(get_user_passed_ops(user_id))
     items = []
-
     for t in await _get_botohub_pending(user_id):
         url = t.get("url")
         op_key = f"bh:{url}"
         if op_key in passed_set:
             continue
         items.append((op_key, "Подписаться", url, False))
-
     try:
         custom_limit = int(get_setting("op_custom_entry_count") or 0)
     except Exception:
@@ -263,7 +270,6 @@ async def collect_op_items(user_id):
         if op_key in passed_set:
             continue
         items.append((op_key, title, link, False))
-
     return items
 
 
@@ -299,7 +305,6 @@ async def _guard_ops(message_or_call):
     else:
         user_id = message_or_call.from_user.id
         chat_id = message_or_call.from_user.id
-
     items = await collect_op_items(user_id)
     if not items:
         return True
@@ -309,7 +314,7 @@ async def _guard_ops(message_or_call):
 
 
 # ============ ПЕРЕХОД В МЕНЮ ============
-async def _send_earn_screen(chat_id, user_id, with_menu=False):
+async def _send_earn_screen(chat_id, user_id):
     me = await bot.get_me()
     ref_bonus = get_setting("ref_bonus")
     refs = get_confirmed_refs_count(user_id)
@@ -334,17 +339,15 @@ async def _send_earn_screen(chat_id, user_id, with_menu=False):
         f'</blockquote>\n\n'
         f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Вы пригласили: <b>{refs}</b>'
     )
-    if with_menu:
-        await bot.send_message(chat_id, text, reply_markup=main_menu(), parse_mode="HTML")
-    else:
-        await bot.send_message(chat_id, text, reply_markup=earn_kb(share_url), parse_mode="HTML")
+    await bot.send_message(chat_id, text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
 
 async def _go_to_main(chat_id, user_id):
-    await _send_earn_screen(chat_id, user_id, with_menu=True)
+    await bot.send_message(chat_id, "👇", reply_markup=main_menu())
+    await _send_earn_screen(chat_id, user_id)
 
 
-# ============ ФУНКЦИИ «3 ДРУГА» ============
+# ============ 3 ДРУГА ============
 async def _show_friends_screen(target, user_id):
     w = get_waiting_withdraw(user_id)
     if not w:
@@ -546,7 +549,6 @@ async def start(message: Message, state: FSMContext):
     if not is_new:
         update_username(message.from_user.id, message.from_user.username)
 
-    # реферал
     if is_new and referrer and referrer != message.from_user.id:
         create_pending_referral(message.from_user.id, referrer)
         try:
@@ -558,7 +560,6 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # ad-метка — считаем ВСЕГДА
     if ad_code:
         src = get_ad_source(ad_code)
         if src:
@@ -568,7 +569,6 @@ async def start(message: Message, state: FSMContext):
                          registered=1 if is_new else 0,
                          is_premium=is_premium)
 
-    # приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -579,7 +579,6 @@ async def start(message: Message, state: FSMContext):
 
     await asyncio.sleep(3)
 
-    # промокод за ОП по ссылке
     if promo_code:
         promo = get_promo(promo_code)
         if promo:
@@ -608,7 +607,6 @@ async def start(message: Message, state: FSMContext):
             await _go_to_main(message.chat.id, message.from_user.id)
             return
 
-    # ОП
     passed = await send_op_screen(message.chat.id, message.from_user.id)
     if not passed:
         return
@@ -1109,7 +1107,6 @@ async def task_check(call: CallbackQuery):
     except Exception:
         msg = None
 
-    # свои задания
     if source.startswith("ct:"):
         try:
             tid = int(source.split(":")[1])
@@ -1140,7 +1137,6 @@ async def task_check(call: CallbackQuery):
         await _send_reward_and_next(call, msg, reward, balance, user_id)
         return
 
-    # Botohub задание
     data = None
     for i in range(3):
         data = await bh_get_task(user_id, skip=False)
@@ -1211,7 +1207,6 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                           show_alert=True)
         return
 
-    # доп. ОП на выводе
     extra_items = []
     if bh_enabled() and BOTOHUB_TOKEN:
         try:
@@ -1240,7 +1235,6 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
                                parse_mode="HTML")
         return
 
-    # ОП нет — сразу waiting (3 друга)
     try:
         await call.message.delete()
     except Exception:
@@ -1307,7 +1301,6 @@ async def wd_friends_check_cb(call: CallbackQuery):
 
 
 async def create_order(call: CallbackQuery, key):
-    """Устаревшая прямая функция (используется только на случай fallback)."""
     name, price = GIFTS[key]
     gift_emoji_id = GIFTS_EMOJI.get(key, "")
     balance = get_balance(call.from_user.id)
@@ -1402,7 +1395,7 @@ async def bh_toggle(call: CallbackQuery):
 async def bh_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли новый текст для ОП. Можно с премиум-эмодзи и форматированием:")
+    await call.message.answer("✏️ Пришли новый текст для ОП:")
     await state.set_state(BHEdit.waiting_text)
 
 
@@ -1410,7 +1403,7 @@ async def bh_edit_text(call: CallbackQuery, state: FSMContext):
 async def bh_save_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    set_setting("botohub_text", message.html_text or message.text or "")
+    set_setting("botohub_text", _smart_text(message))
     await state.clear()
     await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
 
@@ -1923,7 +1916,7 @@ async def priv_menu(call: CallbackQuery):
 async def priv_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли новый текст приватки (можно премиум-эмодзи и форматирование):")
+    await call.message.answer("✏️ Пришли новый текст приватки:")
     await state.set_state(PrivEdit.waiting_text)
 
 
@@ -1931,7 +1924,7 @@ async def priv_edit_text(call: CallbackQuery, state: FSMContext):
 async def priv_save_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    set_setting("priv_text", message.html_text or message.text or "")
+    set_setting("priv_text", _smart_text(message))
     set_setting("priv_enabled", "1")
     await state.clear()
     await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
@@ -2598,7 +2591,7 @@ async def broadcast_menu(call: CallbackQuery, state: FSMContext):
 async def bc_edit_text(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли текст рассылки (можно премиум-эмодзи и форматирование):")
+    await call.message.answer("✏️ Пришли текст рассылки:")
     await state.set_state(BroadcastFlow.waiting_text)
 
 
@@ -2606,7 +2599,7 @@ async def bc_edit_text(call: CallbackQuery, state: FSMContext):
 async def bc_save_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    _get_broadcast_state()["text"] = message.html_text or message.text or ""
+    _get_broadcast_state()["text"] = _smart_text(message)
     await state.clear()
     await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
 
@@ -2813,8 +2806,18 @@ async def bc_start(call: CallbackQuery):
                 await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
             sent += 1
         except Exception as e:
-            errors += 1
             es = str(e).lower()
+            if "parse entities" in es or "unclosed" in es or "can't parse" in es:
+                try:
+                    if photo_id:
+                        await bot.send_photo(uid, photo_id, caption=text, reply_markup=kb)
+                    else:
+                        await bot.send_message(uid, text, reply_markup=kb)
+                    sent += 1
+                    continue
+                except Exception as e2:
+                    print(f"bc fallback: {e2}")
+            errors += 1
             if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
                 blocked += 1
                 mark_ad_user_blocked(uid)
@@ -3001,7 +3004,7 @@ async def ap_texts_menu(call: CallbackQuery):
 async def ap_text_add(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("✏️ Пришли текст поста (можно премиум-эмодзи и форматирование):")
+    await call.message.answer("✏️ Пришли текст поста:")
     await state.set_state(AutoPost.waiting_text)
 
 
@@ -3010,7 +3013,7 @@ async def ap_text_save(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     texts = _load_json_list("autopost_texts")
-    texts.append(message.html_text or message.text or "")
+    texts.append(_smart_text(message))
     _save_json_list("autopost_texts", texts)
     await state.clear()
     await message.answer(f"✅ Добавлено. Всего: <b>{len(texts)}</b>",
@@ -3291,7 +3294,7 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
-# ================== ФОН: ПРОВЕРКА 3 ДРУЗЕЙ ==================
+# ================== ФОН: 3 ДРУЗЕЙ ==================
 async def withdraw_watcher():
     while True:
         try:
