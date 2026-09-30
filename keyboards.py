@@ -5,7 +5,6 @@ from aiogram.types import (
 from config import GIFTS, GIFTS_ORDER, GIFTS_EMOJI
 
 
-# ================== ГЛАВНОЕ МЕНЮ ==================
 def main_menu():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
@@ -15,7 +14,6 @@ def main_menu():
     ])
 
 
-# ================== ЗАРАБОТАТЬ ==================
 def earn_kb(share_url):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Пригласить друга", url=share_url,
@@ -23,7 +21,6 @@ def earn_kb(share_url):
     ])
 
 
-# ================== ПРОФИЛЬ ==================
 def profile_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_bonus",
@@ -33,7 +30,6 @@ def profile_kb():
     ])
 
 
-# ================== ПОДАРКИ ==================
 def gifts_kb():
     buttons = []
     row = []
@@ -54,7 +50,6 @@ def gifts_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ================== ЗАДАНИЕ ==================
 def task_kb(link, source="bh"):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Перейти", url=link,
@@ -66,7 +61,6 @@ def task_kb(link, source="bh"):
     ])
 
 
-# ================== БОНУС ==================
 def daily_bonus_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Забрать", callback_data="daily_claim",
@@ -90,12 +84,7 @@ def promo_cancel_kb():
     ])
 
 
-# ================== ОП-ЭКРАН (Botohub + свои) ==================
 def op_screen_kb(items, confirm_callback="op_check"):
-    """
-    items: список кортежей (op_key, title, url, passed)
-    confirm_callback: 'op_check' (вход в бот) или 'op_check_wd' (вывод)
-    """
     buttons = []
     row = []
     for i, (op_key, title, url, passed) in enumerate(items, 1):
@@ -115,7 +104,6 @@ def op_screen_kb(items, confirm_callback="op_check"):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ================== АДМИНКА ==================
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
@@ -137,7 +125,6 @@ def admin_kb():
     ])
 
 
-# ================== BOTOHUB ОП ==================
 def bh_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -151,7 +138,6 @@ def bh_kb(enabled):
     ])
 
 
-# ================== ЗАДАНИЯ BOTOHUB ==================
 def tasks_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -161,7 +147,6 @@ def tasks_kb(enabled):
     ])
 
 
-# ================== СВОИ ЗАДАНИЯ ==================
 def ctasks_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить", callback_data="ctask_add")],
@@ -180,7 +165,6 @@ def ctask_type_kb():
     ])
 
 
-# ================== СВОИ ОП ==================
 def cop_kb(op_type):
     title = "входе" if op_type == "entry" else "выводе"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -199,7 +183,6 @@ def cop_type_kb():
     ])
 
 
-# ================== ЗАЯВКИ ==================
 def admin_wd_kb(wid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
@@ -207,7 +190,6 @@ def admin_wd_kb(wid):
     ])
 
 
-# ================== ПРИВАТКА ==================
 def priv_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="priv_edit_text")],
@@ -217,7 +199,6 @@ def priv_kb():
     ])
 
 
-# ================== РАССЫЛКА ==================
 def broadcast_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
@@ -250,7 +231,6 @@ def broadcast_preview_kb():
     ])
 
 
-# ================== НАСТРОЙКИ ==================
 def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Бонус за реферала", callback_data="set:ref_bonus")],
@@ -261,7 +241,6 @@ def settings_kb():
     ])
 
 
-# ================== ПРОМОКОДЫ ==================
 def promos_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать промокод", callback_data="promo_create")],
@@ -294,7 +273,6 @@ def promo_op_select_kb(all_ops, selected, code):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# ================== РЕКЛАМА ==================
 def ad_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить метку", callback_data="ad_add")],
@@ -304,7 +282,6 @@ def ad_menu_kb():
     ])
 
 
-# ================== АВТОПОСТ ==================
 def autopost_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -337,7 +314,6 @@ def autopost_chats_kb():
     ])
 
 
-# ================== ЮЗЕР ==================
 def user_view_kb(uid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👥 Список рефералов", callback_data=f"user_refs:{uid}")],
