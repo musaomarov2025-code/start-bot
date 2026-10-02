@@ -63,7 +63,6 @@ def init_db():
     if "amount_min" not in cols:
         cur.execute("ALTER TABLE promos ADD COLUMN amount_min INTEGER DEFAULT 0")
 
-    # --- миграции ad_sources ---
     cur.execute("PRAGMA table_info(ad_sources)")
     cols = {r[1] for r in cur.fetchall()}
     if "clicks" not in cols:
@@ -71,7 +70,6 @@ def init_db():
     if "price_per_click" not in cols:
         cur.execute("ALTER TABLE ad_sources ADD COLUMN price_per_click INTEGER DEFAULT 0")
 
-    # --- миграции ad_users ---
     cur.execute("PRAGMA table_info(ad_users)")
     cols = {r[1] for r in cur.fetchall()}
     if "registered" not in cols:
@@ -79,7 +77,6 @@ def init_db():
     if "is_premium" not in cols:
         cur.execute("ALTER TABLE ad_users ADD COLUMN is_premium INTEGER DEFAULT 0")
 
-    # --- дневные логи переходов по метке ---
     cur.execute("""CREATE TABLE IF NOT EXISTS ad_daily (
         code TEXT,
         date TEXT,
@@ -88,13 +85,19 @@ def init_db():
         PRIMARY KEY (code, date)
     )""")
 
-    # --- ожидание 3 друзей при выводе ---
     cur.execute("""CREATE TABLE IF NOT EXISTS withdraw_waiting (
         user_id INTEGER PRIMARY KEY,
         gift_key TEXT,
-        friends_base INTEGER,
         created_at TEXT
     )""")
+
+    # --- миграция: welcome_bonus_paid ---
+    cur.execute("PRAGMA table_info(users)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "welcome_bonus_paid" not in cols:
+        cur.execute("ALTER TABLE users ADD COLUMN welcome_bonus_paid INTEGER DEFAULT 0")
+        # старым юзерам ставим 1 — они бонус уже не получат
+        cur.execute("UPDATE users SET welcome_bonus_paid = 1")
 
     conn.commit()
     conn.close()
@@ -201,6 +204,25 @@ def get_all_user_ids():
     rows = cur.fetchall()
     conn.close()
     return [r[0] for r in rows]
+
+
+def is_welcome_bonus_paid(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT welcome_bonus_paid FROM users WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return True
+    return bool(row[0])
+
+
+def mark_welcome_bonus_paid(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET welcome_bonus_paid = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 # ================== REFERRALS ==================
@@ -439,6 +461,20 @@ def user_used_promo(code, user_id):
     row = cur.fetchone()
     conn.close()
     return row is not None
+
+
+def get_promo_uses_list(code, limit=10):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("""SELECT pu.user_id, u.username, pu.used_at
+                   FROM promo_uses pu
+                   LEFT JOIN users u ON u.user_id = pu.user_id
+                   WHERE pu.code = ?
+                   ORDER BY pu.used_at DESC LIMIT ?""",
+                (code.upper(), limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def _calc_promo_amount(amount, amount_min, p_type):
@@ -790,11 +826,11 @@ def get_ad_stats_period(code, start_iso=None, end_iso=None):
 
 
 # ================== WITHDRAW WAITING ==================
-def set_waiting_withdraw(user_id, gift_key, friends_base):
+def set_waiting_withdraw(user_id, gift_key):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO withdraw_waiting (user_id, gift_key, friends_base, created_at) VALUES (?, ?, ?, ?)",
-                (user_id, gift_key, friends_base, datetime.now().isoformat()))
+    cur.execute("INSERT OR REPLACE INTO withdraw_waiting (user_id, gift_key, created_at) VALUES (?, ?, ?)",
+                (user_id, gift_key, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -802,7 +838,7 @@ def set_waiting_withdraw(user_id, gift_key, friends_base):
 def get_waiting_withdraw(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT user_id, gift_key, friends_base, created_at FROM withdraw_waiting WHERE user_id = ?",
+    cur.execute("SELECT user_id, gift_key, created_at FROM withdraw_waiting WHERE user_id = ?",
                 (user_id,))
     row = cur.fetchone()
     conn.close()
@@ -815,12 +851,3 @@ def delete_waiting_withdraw(user_id):
     cur.execute("DELETE FROM withdraw_waiting WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
-
-
-def get_all_waiting_withdraw_users():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM withdraw_waiting")
-    rows = cur.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
