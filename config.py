@@ -41,12 +41,17 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
+    "welcome_bonus": "15",              # бонус за /start (новым)
+    "withdraw_friends_required": "2",   # сколько друзей нужно для вывода
+    "withdraw_video_id": "",            # file_id видео при выводе
+
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
     "priv_buttons": (
         "👦 Я парень - https://t.me/RuletkaMatchBot?start=savikpriv2509\n"
         "👧 Я девушка - https://t.me/RuletkaMatchBot?start=savikpriv2509"
     ),
+
     "botohub_enabled": "1",
     "botohub_entry_count": "2",
     "botohub_withdraw_count": "6",
@@ -60,11 +65,4 @@ DEFAULTS = {
     "tasks_enabled": "1",
     "task_reward": "1",
     "broadcast_batch_default": "1000",
-    "autopost_enabled": "0",
-    "autopost_chats": "[]",
-    "autopost_texts": "[]",
-    "autopost_interval": "5",
-    "autopost_media_type": "",
-    "autopost_media_id": "",
-    "autopost_buttons": "",
 }
