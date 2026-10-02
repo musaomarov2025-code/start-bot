@@ -104,6 +104,14 @@ def op_screen_kb(items, confirm_callback="op_check"):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def friends_check_kb():
+    """Кнопка 'Проверить' на экране '2 друга'."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Проверить", callback_data="wd_friends_check",
+                              icon_custom_emoji_id="5920433463428650761")],
+    ])
+
+
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
@@ -119,7 +127,7 @@ def admin_kb():
         [InlineKeyboardButton(text="📊 Реклама", callback_data="ad_menu"),
          InlineKeyboardButton(text="💸 Начислить", callback_data="give_start")],
         [InlineKeyboardButton(text="👥 Юзер", callback_data="user_find"),
-         InlineKeyboardButton(text="📢 Автопост", callback_data="autopost_menu")],
+         InlineKeyboardButton(text="🎬 Видео вывода", callback_data="wd_video_menu")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
          InlineKeyboardButton(text="📦 Бэкап", callback_data="backup_help")],
     ])
@@ -236,6 +244,8 @@ def settings_kb():
         [InlineKeyboardButton(text="👥 Бонус за реферала", callback_data="set:ref_bonus")],
         [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="set:daily_bonus")],
         [InlineKeyboardButton(text="💸 Минимум вывода", callback_data="set:min_withdraw")],
+        [InlineKeyboardButton(text="🎉 Бонус за /start", callback_data="set:welcome_bonus")],
+        [InlineKeyboardButton(text="👥 Друзей для вывода", callback_data="set:withdraw_friends_required")],
         [InlineKeyboardButton(text="✏️ Текст под меню", callback_data="set:welcome_text")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
@@ -273,6 +283,34 @@ def promo_op_select_kb(all_ops, selected, code):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def promo_list_kb(rows):
+    """Список промокодов — каждая строка кликабельна."""
+    buttons = []
+    for code, amount, mx, used, active, p_type, amount_min in rows:
+        if active and used < mx:
+            icon = "🟢"
+        else:
+            icon = "🔴"
+        tp = "📢" if p_type == "op" else "💫"
+        if p_type == "op":
+            label = f"{icon} {tp} {code} — {amount_min}-{amount}⭐ | {used}/{mx}"
+        else:
+            label = f"{icon} {tp} {code} — {amount}⭐ | {used}/{mx}"
+        buttons.append([InlineKeyboardButton(
+            text=label, callback_data=f"promo_view:{code}")])
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def promo_view_kb(code):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Удалить этот промокод",
+                              callback_data=f"promo_del_confirm:{code}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="promo_list")],
+    ])
+
+
 def ad_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить метку", callback_data="ad_add")],
@@ -282,35 +320,11 @@ def ad_menu_kb():
     ])
 
 
-def autopost_kb(enabled):
-    status = "🔴 Выключить" if enabled else "🟢 Включить"
+def wd_video_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Тексты поста", callback_data="ap_texts"),
-         InlineKeyboardButton(text="🆔 Чаты", callback_data="ap_chats")],
-        [InlineKeyboardButton(text="🖼 Медиа (фото/видео)", callback_data="ap_edit_media"),
-         InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="ap_del_media")],
-        [InlineKeyboardButton(text="🔗 Кнопки", callback_data="ap_edit_buttons")],
-        [InlineKeyboardButton(text="⏱ Интервал (минуты)", callback_data="ap_edit_interval")],
-        [InlineKeyboardButton(text=status, callback_data="ap_toggle")],
+        [InlineKeyboardButton(text="➕ Загрузить видео", callback_data="wd_video_add")],
+        [InlineKeyboardButton(text="🗑 Убрать видео", callback_data="wd_video_del")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
-def autopost_texts_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить текст", callback_data="ap_text_add")],
-        [InlineKeyboardButton(text="📜 Показать все", callback_data="ap_text_show")],
-        [InlineKeyboardButton(text="🗑 Удалить текст", callback_data="ap_text_del")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="autopost_menu")],
-    ])
-
-
-def autopost_chats_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить чат", callback_data="ap_chat_add")],
-        [InlineKeyboardButton(text="📜 Показать все", callback_data="ap_chat_show")],
-        [InlineKeyboardButton(text="🗑 Удалить чат", callback_data="ap_chat_del")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="autopost_menu")],
     ])
 
 
