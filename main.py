@@ -335,24 +335,28 @@ async def _go_to_main(chat_id, user_id):
     await _send_earn_screen(chat_id, user_id)
 
 
-# ============ 2 ДРУГА ============
+# ============ 3 ДРУГА ============
 def _friends_required():
     try:
-        return int(get_setting("withdraw_friends_required") or 2)
+        return int(get_setting("withdraw_friends_required") or 3)
     except Exception:
-        return 2
+        return 3
 
 
-async def _show_friends_screen(target, user_id):
+async def _show_friends_screen(target, user_id, edit_message=False):
+    """Показывает экран 'нужно N друзей' с прогрессом."""
     w = get_waiting_withdraw(user_id)
     if not w:
         return
-    _, gift_key, _ = w
+    _, gift_key, friends_base, _ = w
     need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    done = refs_now
+    done = refs_now - friends_base
+    if done < 0:
+        done = 0
     if done > need:
         done = need
+
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{user_id}"
     text = (
@@ -366,25 +370,40 @@ async def _show_friends_screen(target, user_id):
         f'Друг должен зайти по ссылке и забрать бонус</blockquote>'
     )
     kb = friends_check_kb()
+
+    if edit_message and isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+
     if isinstance(target, int):
         await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
+    elif isinstance(target, CallbackQuery):
+        await target.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
         await target.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 async def _create_withdraw_waiting(user_id, gift_key, target):
-    set_waiting_withdraw(user_id, gift_key)
+    """Создаёт waiting-заявку. База = текущее число подтверждённых друзей."""
+    refs_now = get_confirmed_refs_count(user_id)
+    set_waiting_withdraw(user_id, gift_key, refs_now)
     await _show_friends_screen(target, user_id)
 
 
 async def _check_and_fulfill_waiting(user_id):
+    """Проверяет, набрал ли юзер нужное число НОВЫХ друзей. Создаёт заявку, если да."""
     w = get_waiting_withdraw(user_id)
     if not w:
         return False
-    _, gift_key, _ = w
+    _, gift_key, friends_base, _ = w
     need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    if refs_now < need:
+    done = refs_now - friends_base
+
+    if done < need:
         return False
     if gift_key not in GIFTS:
         delete_waiting_withdraw(user_id)
@@ -393,6 +412,7 @@ async def _check_and_fulfill_waiting(user_id):
     balance = get_balance(user_id)
     if balance < price:
         return False
+
     wid = create_withdrawal(user_id, price, gift_key)
     delete_waiting_withdraw(user_id)
     gift_emoji_id = GIFTS_EMOJI.get(gift_key, "")
@@ -557,7 +577,6 @@ async def start(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-    # реферал
     if is_new and referrer and referrer != message.from_user.id:
         create_pending_referral(message.from_user.id, referrer)
         try:
@@ -569,7 +588,6 @@ async def start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # ad-метка
     if ad_code:
         src = get_ad_source(ad_code)
         if src:
@@ -579,7 +597,6 @@ async def start(message: Message, state: FSMContext):
                          registered=1 if is_new else 0,
                          is_premium=is_premium)
 
-    # приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -590,7 +607,6 @@ async def start(message: Message, state: FSMContext):
 
     await asyncio.sleep(3)
 
-    # промокод по ссылке
     if promo_code:
         promo = get_promo(promo_code)
         if promo:
@@ -1217,9 +1233,12 @@ async def withdraw(message: Message, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # если уже висит waiting — показываем экран 2 друга
+    # если уже висит waiting — показываем экран друзей
     w = get_waiting_withdraw(user_id)
     if w:
+        ok = await _check_and_fulfill_waiting(user_id)
+        if ok:
+            return
         await _show_friends_screen(message, user_id)
         return
 
@@ -1249,16 +1268,6 @@ async def withdraw(message: Message, state: FSMContext):
             parse_mode="HTML")
         return
 
-    # ОП нет → проверяем 2 друга
-    need = _friends_required()
-    refs_now = get_confirmed_refs_count(user_id)
-    if refs_now < need:
-        # показываем экран "2 друга" без waiting (сначала должен выбрать подарок)
-        # на самом деле без gift_key — просто показываем подарки, потом покажем друзей
-        await _show_gifts_with_video(chat_id, user_id)
-        return
-
-    # 2 друга есть → сразу показываем подарки
     await _show_gifts_with_video(chat_id, user_id)
 
 
@@ -1287,15 +1296,6 @@ async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    # ОП пройдены → проверяем 2 друга
-    need = _friends_required()
-    refs_now = get_confirmed_refs_count(user_id)
-    if refs_now < need:
-        # Не хватает друзей — показываем подарки, юзер выберет, потом покажем экран друзей
-        await _show_gifts_with_video(user_id, user_id)
-        return
-
-    # друзья есть → показываем подарки
     await _show_gifts_with_video(user_id, user_id)
 
 
@@ -1316,31 +1316,35 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
         return
 
     user_id = call.from_user.id
-    need = _friends_required()
+
+    # если уже висит waiting с другим подарком — удаляем старую
+    existing = get_waiting_withdraw(user_id)
+    if existing and existing[1] != key:
+        delete_waiting_withdraw(user_id)
+
+    # База = текущее число confirmed. Нужно набрать +need новых.
     refs_now = get_confirmed_refs_count(user_id)
+    set_waiting_withdraw(user_id, key, refs_now)
 
-    if refs_now >= need:
-        # Друзей хватает → создаём заявку
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-        await create_order(call, key)
-        return
-
-    # Не хватает → создаём waiting и показываем экран друзей
-    set_waiting_withdraw(user_id, key)
     try:
         await call.message.delete()
     except Exception:
         pass
+
+    # Проверяем: вдруг у него уже достаточно? (теоретически база = его текущее, значит done=0)
+    ok = await _check_and_fulfill_waiting(user_id)
+    if ok:
+        return
+
+    # Показываем экран друзей
     await _show_friends_screen(user_id, user_id)
 
 
 @dp.callback_query(F.data == "wd_friends_check")
 async def wd_friends_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
-    await call.answer("⏳ Проверяю...")
+    await call.answer()
+
     ok = await _check_and_fulfill_waiting(user_id)
     if ok:
         try:
@@ -1348,14 +1352,14 @@ async def wd_friends_check_cb(call: CallbackQuery):
         except Exception:
             pass
         return
+
     w = get_waiting_withdraw(user_id)
     if not w:
-        await call.message.answer("❌ Заявка не найдена.")
+        await call.answer("Заявка не найдена", show_alert=True)
         return
-    need = _friends_required()
-    refs_now = get_confirmed_refs_count(user_id)
-    done = min(need, refs_now)
-    await call.message.answer(f"❌ Ещё не все друзья. Прогресс: {done}/{need}")
+
+    # Обновляем САМО сообщение (то же), а не шлём новое
+    await _show_friends_screen(call, user_id, edit_message=True)
 
 
 async def create_order(call: CallbackQuery, key):
@@ -2155,8 +2159,8 @@ async def wd_video_add(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer("🎬 Пришли видео (6 сек):")
-    await state.set_state(BroadcastFlow.waiting_photo)  # переиспользуем
     await state.update_data(wd_video=True)
+    await state.set_state(BroadcastFlow.waiting_photo)
 
 
 @dp.message(BroadcastFlow.waiting_photo)
@@ -2164,14 +2168,21 @@ async def wd_video_save(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     data = await state.get_data()
-    if not data.get("wd_video"):
+    if data.get("wd_video"):
+        if not message.video:
+            await message.answer("⚠️ Нужно именно видео.")
+            return
+        set_setting("withdraw_video_id", message.video.file_id)
+        await state.clear()
+        await message.answer("✅ Видео сохранено", reply_markup=back_admin_kb())
         return
-    if not message.video:
-        await message.answer("⚠️ Нужно именно видео.")
+    # это фото для рассылки
+    if not message.photo:
+        await message.answer("⚠️ Нужно фото.")
         return
-    set_setting("withdraw_video_id", message.video.file_id)
+    _get_broadcast_state()["photo_id"] = message.photo[-1].file_id
     await state.clear()
-    await message.answer("✅ Видео сохранено", reply_markup=back_admin_kb())
+    await message.answer("✅ Фото сохранено", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data == "wd_video_del")
@@ -2406,10 +2417,10 @@ async def promo_uses_step(message: Message, state: FSMContext):
     link = f"https://t.me/{me.username}?start=promo_{data['code']}"
     await message.answer(
         f"✅ <b>Промокод</b> <code>{data['code']}</code> <b>создан!</b>\n\n"
-        f"<tg-emoji emoji-id=\"5469741319330996757\">💫</tg-emoji> Тип: обычный (без ОП)\n"
-        f"<tg-emoji emoji-id=\"6025976946083500432\">💰</tg-emoji> Сумма: <b>{data['amount']} ⭐</b>\n"
-        f"<tg-emoji emoji-id=\"5350460637182993292\">🎯</tg-emoji> Активаций: <b>{uses}</b>\n\n"
-        f"<tg-emoji emoji-id=\"5271604874419647061\">🔗</tg-emoji> <b>Ссылка для юзеров:</b>\n"
+        f"💫 Тип: обычный (без ОП)\n"
+        f"💰 Сумма: <b>{data['amount']} ⭐</b>\n"
+        f"🎯 Активаций: <b>{uses}</b>\n\n"
+        f"🔗 <b>Ссылка для юзеров:</b>\n"
         f"<code>{link}</code>\n\n"
         f"Юзер жмёт → сразу получает <b>{data['amount']} ⭐</b> без ОП.",
         parse_mode="HTML")
@@ -2480,10 +2491,10 @@ async def pcreate_done(call: CallbackQuery, state: FSMContext):
     try:
         await call.message.edit_text(
             f"✅ <b>Промокод</b> <code>{code}</code> <b>создан!</b>\n\n"
-            f"<tg-emoji emoji-id=\"5370599459661045441\">📢</tg-emoji> Тип: за ОП\n"
-            f"<tg-emoji emoji-id=\"6025976946083500432\">💰</tg-emoji> Сумма: <b>{amount_min}-{amount} ⭐</b>\n"
-            f"<tg-emoji emoji-id=\"5350460637182993292\">🎯</tg-emoji> Активаций: <b>{uses}</b>\n"
-            f"<tg-emoji emoji-id=\"5271604874419647061\">🔗</tg-emoji> <b>Ссылка:</b>\n"
+            f"📢 Тип: за ОП\n"
+            f"💰 Сумма: <b>{amount_min}-{amount} ⭐</b>\n"
+            f"🎯 Активаций: <b>{uses}</b>\n"
+            f"🔗 <b>Ссылка:</b>\n"
             f"<code>{link}</code>",
             parse_mode="HTML")
     except Exception:
@@ -2516,14 +2527,12 @@ async def promo_view_cb(call: CallbackQuery):
     uses_list = get_promo_uses_list(code, 10)
 
     if p_type == "op":
-        type_line = f'<tg-emoji emoji-id="5370599459661045441">📢</tg-emoji> Тип: за ОП'
+        type_line = "📢 Тип: за ОП"
         sum_line = f"{amount_min}-{amount} ⭐"
     else:
-        type_line = f'<tg-emoji emoji-id="5469741319330996757">💫</tg-emoji> Тип: обычный'
+        type_line = "💫 Тип: обычный"
         sum_line = f"{amount} ⭐"
 
-    total_given = 0
-    # сумма выданных звёзд — считаем: если обычный, то used * amount; если ОП — приблизительно среднее
     if p_type == "op":
         avg = (amount + amount_min) // 2 if amount_min else amount
         total_given = used * avg
@@ -2531,11 +2540,11 @@ async def promo_view_cb(call: CallbackQuery):
         total_given = used * amount
 
     text = (
-        f'<tg-emoji emoji-id="5203993413346680064">📊</tg-emoji> <b>Промокод</b> <code>{code}</code>\n\n'
+        f"📊 <b>Промокод</b> <code>{code}</code>\n\n"
         f"{type_line}\n"
-        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Сумма: <b>{sum_line}</b>\n'
-        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> Активаций: <b>{used} / {mx}</b>\n'
-        f'<tg-emoji emoji-id="5895708410447401643">⭐</tg-emoji> Выдано звёзд: <b>{total_given}</b>\n\n'
+        f"💰 Сумма: <b>{sum_line}</b>\n"
+        f"🎯 Активаций: <b>{used} / {mx}</b>\n"
+        f"⭐ Выдано звёзд: <b>{total_given}</b>\n\n"
     )
     if uses_list:
         text += "<b>Последние активации:</b>\n"
@@ -2807,21 +2816,6 @@ async def bc_edit_photo(call: CallbackQuery, state: FSMContext):
     await call.message.answer("🖼 Пришли фото:")
     await state.update_data(bc_photo=True)
     await state.set_state(BroadcastFlow.waiting_photo)
-
-
-@dp.message(BroadcastFlow.waiting_photo)
-async def bc_save_photo(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    data = await state.get_data()
-    if not data.get("bc_photo"):
-        return  # это видео вывода
-    if not message.photo:
-        await message.answer("⚠️ Нужно фото.")
-        return
-    _get_broadcast_state()["photo_id"] = message.photo[-1].file_id
-    await state.clear()
-    await message.answer("✅ Фото сохранено", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data == "bc_del_photo")
@@ -3139,18 +3133,17 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
-# ================== ФОН: 2 ДРУГА ==================
+# ================== ФОН: 3 ДРУГА ==================
 async def withdraw_watcher():
-    """Каждую минуту проверяет, набрали ли юзеры нужное число друзей."""
     while True:
         try:
             import sqlite3
             conn = sqlite3.connect(DB)
             cur = conn.cursor()
-            cur.execute("SELECT user_id, gift_key FROM withdraw_waiting")
+            cur.execute("SELECT user_id FROM withdraw_waiting")
             rows = cur.fetchall()
             conn.close()
-            for user_id, gift_key in rows:
+            for (user_id,) in rows:
                 try:
                     await _check_and_fulfill_waiting(user_id)
                 except Exception as e:
