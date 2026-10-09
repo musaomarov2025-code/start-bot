@@ -88,15 +88,19 @@ def init_db():
     cur.execute("""CREATE TABLE IF NOT EXISTS withdraw_waiting (
         user_id INTEGER PRIMARY KEY,
         gift_key TEXT,
+        friends_base INTEGER DEFAULT 0,
         created_at TEXT
     )""")
 
-    # --- миграция: welcome_bonus_paid ---
+    cur.execute("PRAGMA table_info(withdraw_waiting)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "friends_base" not in cols:
+        cur.execute("ALTER TABLE withdraw_waiting ADD COLUMN friends_base INTEGER DEFAULT 0")
+
     cur.execute("PRAGMA table_info(users)")
     cols = {r[1] for r in cur.fetchall()}
     if "welcome_bonus_paid" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN welcome_bonus_paid INTEGER DEFAULT 0")
-        # старым юзерам ставим 1 — они бонус уже не получат
         cur.execute("UPDATE users SET welcome_bonus_paid = 1")
 
     conn.commit()
@@ -826,11 +830,13 @@ def get_ad_stats_period(code, start_iso=None, end_iso=None):
 
 
 # ================== WITHDRAW WAITING ==================
-def set_waiting_withdraw(user_id, gift_key):
+def set_waiting_withdraw(user_id, gift_key, friends_base):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO withdraw_waiting (user_id, gift_key, created_at) VALUES (?, ?, ?)",
-                (user_id, gift_key, datetime.now().isoformat()))
+    cur.execute(
+        "INSERT OR REPLACE INTO withdraw_waiting (user_id, gift_key, friends_base, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, gift_key, friends_base, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -838,8 +844,8 @@ def set_waiting_withdraw(user_id, gift_key):
 def get_waiting_withdraw(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-    cur.execute("SELECT user_id, gift_key, created_at FROM withdraw_waiting WHERE user_id = ?",
-                (user_id,))
+    cur.execute("SELECT user_id, gift_key, friends_base, created_at "
+                "FROM withdraw_waiting WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -851,3 +857,12 @@ def delete_waiting_withdraw(user_id):
     cur.execute("DELETE FROM withdraw_waiting WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+
+
+def get_all_waiting_withdraw_users():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM withdraw_waiting")
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
