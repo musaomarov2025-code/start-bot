@@ -444,12 +444,12 @@ async def _show_friends_screen(target, user_id, edit_message=False):
     w = get_waiting_withdraw(user_id)
     if not w:
         return
-_, gift_key, friends_base, _ = w
-if friends_base is None:
-    friends_base = 0
-need = _friends_required()
-refs_now = get_confirmed_refs_count(user_id)
-done = refs_now - friends_base
+    _, gift_key, friends_base, _ = w
+    if friends_base is None:
+        friends_base = 0
+    need = _friends_required()
+    refs_now = get_confirmed_refs_count(user_id)
+    done = refs_now - friends_base
     if done < 0:
         done = 0
     if done > need:
