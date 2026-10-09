@@ -407,7 +407,12 @@ async def _send_earn_screen(chat_id, user_id):
 
 
 async def _go_to_main(chat_id, user_id):
-    await _send_menu_msg(chat_id, user_id, "👇", reply_markup=main_menu())
+    try:
+        await bot.send_message(chat_id, "👇", reply_markup=main_menu())
+    except Exception as e:
+        es = str(e).lower()
+        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
+            mark_user_blocked(user_id)
     await _send_earn_screen(chat_id, user_id)
 
 
@@ -500,8 +505,8 @@ async def _check_and_fulfill_waiting(user_id):
     name, price = GIFTS[gift_key]
     balance = get_balance(user_id)
     if balance < price:
+        delete_waiting_withdraw(user_id)
         return False
-
     wid = create_withdrawal(user_id, price, gift_key)
     delete_waiting_withdraw(user_id)
     gift_emoji_id = GIFTS_EMOJI.get(gift_key, "")
