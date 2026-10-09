@@ -32,7 +32,6 @@ def init_db():
         PRIMARY KEY (user_id, op_key)
     )""")
 
-    # НОВОЕ: кэш ОП на 48ч
     cur.execute("""CREATE TABLE IF NOT EXISTS op_passed_cache (
         user_id INTEGER,
         op_key TEXT,
@@ -100,7 +99,7 @@ def init_db():
         created_at TEXT
     )""")
 
- cur.execute("PRAGMA table_info(withdraw_waiting)")
+    cur.execute("PRAGMA table_info(withdraw_waiting)")
     cols = {r[1] for r in cur.fetchall()}
     if "friends_base" not in cols:
         cur.execute("ALTER TABLE withdraw_waiting ADD COLUMN friends_base INTEGER DEFAULT 0")
@@ -111,7 +110,6 @@ def init_db():
     if "welcome_bonus_paid" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN welcome_bonus_paid INTEGER DEFAULT 0")
         cur.execute("UPDATE users SET welcome_bonus_paid = 1")
-    # НОВОЕ: трекинг блокировки
     if "blocked" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN blocked INTEGER DEFAULT 0")
 
@@ -241,7 +239,7 @@ def mark_welcome_bonus_paid(user_id):
     conn.close()
 
 
-# ================== BLOCKED (НОВОЕ) ==================
+# ================== BLOCKED ==================
 def mark_user_blocked(user_id):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -404,7 +402,6 @@ def get_pending_withdrawals_page(offset=0, limit=10):
 
 
 def bulk_accept_withdrawals():
-    """Одобряет все pending. Возвращает список (wid, user_id, amount, gift)."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE status = 'pending'")
@@ -417,7 +414,6 @@ def bulk_accept_withdrawals():
 
 
 def bulk_reject_withdrawals():
-    """Отклоняет все pending, возвращает баланс. Возвращает список (wid, user_id, amount, gift)."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE status = 'pending'")
@@ -475,7 +471,6 @@ def get_stats():
 
 
 def get_extended_stats():
-    """Расширенная статистика (п.9А+Г+Д)."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
@@ -823,9 +818,8 @@ def has_op_passed(user_id, op_key):
     return row is not None
 
 
-# ================== OP CACHE 48H (НОВОЕ) ==================
+# ================== OP CACHE 48H ==================
 def mark_op_passed_cached(user_id, op_key):
-    """Помечает ОП как пройденный в кэше (48ч)."""
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute("INSERT OR REPLACE INTO op_passed_cache (user_id, op_key, passed_at) VALUES (?, ?, ?)",
@@ -835,7 +829,6 @@ def mark_op_passed_cached(user_id, op_key):
 
 
 def get_cached_op_keys(user_id, hours=48):
-    """Возвращает set op_key, пройденных за последние N часов."""
     threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -847,7 +840,6 @@ def get_cached_op_keys(user_id, hours=48):
 
 
 def clear_expired_op_cache(hours=48):
-    """Удаляет протухшие записи кэша."""
     threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
