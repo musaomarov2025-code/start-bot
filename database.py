@@ -100,10 +100,11 @@ def init_db():
         created_at TEXT
     )""")
 
-    cur.execute("PRAGMA table_info(withdraw_waiting)")
+ cur.execute("PRAGMA table_info(withdraw_waiting)")
     cols = {r[1] for r in cur.fetchall()}
     if "friends_base" not in cols:
         cur.execute("ALTER TABLE withdraw_waiting ADD COLUMN friends_base INTEGER DEFAULT 0")
+    cur.execute("UPDATE withdraw_waiting SET friends_base = 0 WHERE friends_base IS NULL")
 
     cur.execute("PRAGMA table_info(users)")
     cols = {r[1] for r in cur.fetchall()}
