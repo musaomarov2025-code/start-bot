@@ -10,7 +10,7 @@ def main_menu():
         [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
         [KeyboardButton(text="Вывести звёзды", icon_custom_emoji_id="6025976946083500432")],
         [KeyboardButton(text="Задания", icon_custom_emoji_id="5427168083074628963"),
-         KeyboardButton(text="Прочее", icon_custom_emoji_id="5325971446625758812")],
+         KeyboardButton(text="Профиль", icon_custom_emoji_id="5325971446625758812")],
     ])
 
 
@@ -85,10 +85,6 @@ def promo_cancel_kb():
 
 
 def op_screen_kb(items, confirm_callback="op_check"):
-    """
-    items: список (op_key, title, url, passed).
-    Пройденные в список не попадают — их фильтрует main.py.
-    """
     buttons = []
     row = []
     for i, (op_key, title, url, passed) in enumerate(items, 1):
@@ -103,14 +99,13 @@ def op_screen_kb(items, confirm_callback="op_check"):
     if row:
         buttons.append(row)
     buttons.append([InlineKeyboardButton(
-        text="Я подписался",
-        callback_data=confirm_callback,
+        text="Я подписался", callback_data=confirm_callback,
         icon_custom_emoji_id="6026257381678124710")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def friends_check_kb():
-    """Кнопка 'Проверить' на экране 'нужно N друзей'."""
+    """Кнопка 'Проверить' на экране '2 друга'."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Проверить", callback_data="wd_friends_check",
                               icon_custom_emoji_id="5920433463428650761")],
@@ -203,57 +198,6 @@ def admin_wd_kb(wid):
     ])
 
 
-# ============ НОВОЕ: список заявок с пагинацией + авто ============
-def wd_list_kb(count, page, pages, rows):
-    """
-    count: всего pending
-    page: текущая (0-based)
-    pages: всего страниц
-    rows: список (wid, user_id, amount, gift_key) на этой странице
-    """
-    buttons = []
-    # карточки — по одной на строку
-    for wid, user_id, amount, gift_key in rows:
-        name = GIFTS.get(gift_key, ("—", 0))[0]
-        buttons.append([InlineKeyboardButton(
-            text=f"#{wid} — ID {user_id} — {name} — {amount}⭐",
-            callback_data=f"wd_view:{wid}"
-        )])
-    # навигация
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"wd_page:{page - 1}"))
-    nav.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="wd_noop"))
-    if page < pages - 1:
-        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"wd_page:{page + 1}"))
-    if nav:
-        buttons.append(nav)
-    # массовые кнопки
-    buttons.append([
-        InlineKeyboardButton(text=f"✅ Принять все ({count})", callback_data="wd_bulk_ok_ask"),
-    ])
-    buttons.append([
-        InlineKeyboardButton(text=f"❌ Отклонить все ({count})", callback_data="wd_bulk_no_ask"),
-    ])
-    buttons.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="wd_list")])
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def wd_bulk_confirm_kb(action, count):
-    """action = 'ok' или 'no'"""
-    if action == "ok":
-        text = f"✅ Одобрить все {count} заявок?"
-        cb = "wd_bulk_ok_do"
-    else:
-        text = f"❌ Отклонить все {count} заявок? Звёзды вернутся юзерам."
-        cb = "wd_bulk_no_do"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=text, callback_data=cb)],
-        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="wd_list")],
-    ])
-
-
 def priv_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить текст", callback_data="priv_edit_text")],
@@ -266,8 +210,8 @@ def priv_kb():
 def broadcast_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
-        [InlineKeyboardButton(text="📎 Медиа (фото/видео/GIF/стикер)", callback_data="bc_edit_media")],
-        [InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
+         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
         [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
         [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
         [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="bc_preview")],
@@ -286,8 +230,8 @@ def broadcast_confirm_kb():
 def broadcast_preview_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
-        [InlineKeyboardButton(text="📎 Медиа", callback_data="bc_edit_media")],
-        [InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
+         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
         [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
         [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
         [InlineKeyboardButton(text="✅ Отправить", callback_data="bc_send")],
@@ -340,6 +284,7 @@ def promo_op_select_kb(all_ops, selected, code):
 
 
 def promo_list_kb(rows):
+    """Список промокодов — каждая строка кликабельна."""
     buttons = []
     for code, amount, mx, used, active, p_type, amount_min in rows:
         if active and used < mx:
