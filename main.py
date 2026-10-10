@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 import random
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -18,7 +19,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, GIFTS_EMOJI, REFERRAL_DAYS, DB,
-    BOTOHUB_TOKEN, BOTOHUB_URL, BOTOHUB_TASKS_URL, OP_CACHE_HOURS,
+    BOTOHUB_TOKEN, BOTOHUB_URL, BOTOHUB_TASKS_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -32,7 +33,7 @@ from database import (
     get_refs_to_remind, mark_reminded,
     create_withdrawal, get_withdrawal, get_pending_withdrawals, set_withdrawal_status,
     get_withdrawal_history,
-    get_stats, get_top_balance, get_top_refs, get_extended_stats,
+    get_stats, get_top_balance, get_top_refs,
     create_promo, get_promo, get_promo_op_reqs, list_promos, delete_promo,
     activate_promo, activate_promo_after_op, get_promo_uses_list,
     add_custom_op, list_custom_ops, delete_custom_op,
@@ -40,15 +41,11 @@ from database import (
     add_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
     get_next_custom_task, mark_custom_task_done,
     mark_op_passed, get_user_passed_ops, has_op_passed,
-    mark_op_passed_cached, get_cached_op_keys, clear_expired_op_cache,
-    mark_user_blocked, is_user_blocked, get_blocked_count,
     add_ad_source, get_ad_source, list_ad_sources, delete_ad_source,
     mark_ad_user, mark_ad_user_op, mark_ad_user_blocked,
     increment_ad_refs, add_ad_stars, get_ad_stats_period,
     increment_ad_click,
     set_waiting_withdraw, get_waiting_withdraw, delete_waiting_withdraw,
-    get_pending_withdrawals_count, get_pending_withdrawals_page,
-    bulk_accept_withdrawals, bulk_reject_withdrawals,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
@@ -60,7 +57,6 @@ from keyboards import (
     op_screen_kb, friends_check_kb,
     broadcast_menu_kb, broadcast_confirm_kb, broadcast_preview_kb,
     ad_menu_kb, wd_video_kb,
-    wd_list_kb, wd_bulk_confirm_kb,
 )
 
 bot = Bot(token=BOT_TOKEN)
@@ -70,53 +66,13 @@ BOT_ID = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN else 0
 
 PENDING_PROMO = {}
 PENDING_WD = {}
-MENU_MSG = {}
 
 
-# ================== ХЕЛПЕРЫ ==================
+# ================== ХЕЛПЕР ==================
 def _smart_text(message):
     if message.entities:
         return message.html_text or message.text or ""
     return message.text or ""
-
-
-async def _safe_delete(chat_id, message_id):
-    if not message_id:
-        return
-    try:
-        await bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-
-
-async def _safe_send(chat_id, text, **kwargs):
-    try:
-        return await bot.send_message(chat_id, text, **kwargs)
-    except Exception as e:
-        es = str(e).lower()
-        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-            try:
-                mark_user_blocked(chat_id)
-                mark_ad_user_blocked(chat_id)
-            except Exception:
-                pass
-        raise
-
-
-async def _send_menu_msg(chat_id, user_id, text, reply_markup=None, parse_mode=None):
-    if get_setting("menu_edit_enabled") == "1":
-        old_id = MENU_MSG.get(user_id)
-        if old_id:
-            await _safe_delete(chat_id, old_id)
-    try:
-        msg = await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
-        MENU_MSG[user_id] = msg.message_id
-        return msg
-    except Exception as e:
-        es = str(e).lower()
-        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-            mark_user_blocked(user_id)
-        raise
 
 
 # ================== FSM ==================
@@ -183,12 +139,12 @@ class AdDel(StatesGroup):
 
 class BroadcastFlow(StatesGroup):
     waiting_text = State()
-    waiting_media = State()
+    waiting_photo = State()
     waiting_buttons = State()
     waiting_count = State()
 
 
-# ================== BOTOHUB ==================
+# ============ BOTOHUB ============
 def bh_enabled():
     return get_setting("botohub_enabled") == "1"
 
@@ -241,7 +197,7 @@ async def check_custom_task(user_id, check_type, check_target):
         return True
 
 
-# ================== ПРИВАТКА ==================
+# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -267,7 +223,8 @@ def build_priv_buttons():
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# ================== СБОР ОП ==================
+
+# ============ СБОР ОП ============
 async def _get_botohub_pending(user_id):
     if not (bh_enabled() and BOTOHUB_TOKEN):
         return []
@@ -282,18 +239,13 @@ async def _get_botohub_pending(user_id):
 
 async def collect_op_items(user_id):
     passed_set = set(get_user_passed_ops(user_id))
-    cached_set = get_cached_op_keys(user_id, hours=OP_CACHE_HOURS)
     items = []
-
     for t in await _get_botohub_pending(user_id):
         url = t.get("url")
         op_key = f"bh:{url}"
         if op_key in passed_set:
             continue
-        if op_key in cached_set:
-            continue
         items.append((op_key, "Подписаться", url, False))
-
     try:
         custom_limit = int(get_setting("op_custom_entry_count") or 0)
     except Exception:
@@ -305,10 +257,7 @@ async def collect_op_items(user_id):
         op_key = f"custom:{cid}"
         if op_key in passed_set:
             continue
-        if op_key in cached_set:
-            continue
         items.append((op_key, title, link, False))
-
     return items
 
 
@@ -323,9 +272,7 @@ async def _mark_botohub_completed(user_id):
     tasks = data.get("tasks", [])
     for t in tasks:
         if t.get("completed") and t.get("url"):
-            op_key = f"bh:{t['url']}"
-            mark_op_passed(user_id, op_key)
-            mark_op_passed_cached(user_id, op_key)
+            mark_op_passed(user_id, f"bh:{t['url']}")
 
 
 async def send_op_screen(chat_id, user_id, header_text=None,
@@ -354,7 +301,7 @@ async def _guard_ops(message_or_call):
     return False
 
 
-# ================== МЕНЮ ==================
+# ============ ПЕРЕХОД В МЕНЮ ============
 async def _send_earn_screen(chat_id, user_id):
     me = await bot.get_me()
     ref_bonus = get_setting("ref_bonus")
@@ -380,42 +327,32 @@ async def _send_earn_screen(chat_id, user_id):
         f'</blockquote>\n\n'
         f'<tg-emoji emoji-id="5258513401784573443">👥</tg-emoji> Вы пригласили: <b>{refs}</b>'
     )
-    await _send_menu_msg(chat_id, user_id, text, reply_markup=earn_kb(share_url), parse_mode="HTML")
+    await bot.send_message(chat_id, text, reply_markup=earn_kb(share_url), parse_mode="HTML")
 
 
 async def _go_to_main(chat_id, user_id):
-    try:
-        await bot.send_message(chat_id, "👇", reply_markup=main_menu())
-    except Exception as e:
-        es = str(e).lower()
-        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-            mark_user_blocked(user_id)
+    await bot.send_message(chat_id, "👇", reply_markup=main_menu())
     await _send_earn_screen(chat_id, user_id)
 
 
-# ================== 3 ДРУГА ==================
+# ============ 2 ДРУГА ============
 def _friends_required():
     try:
-        return int(get_setting("withdraw_friends_required") or 3)
+        return int(get_setting("withdraw_friends_required") or 2)
     except Exception:
-        return 3
+        return 2
 
 
-async def _show_friends_screen(target, user_id, edit_message=False):
+async def _show_friends_screen(target, user_id):
     w = get_waiting_withdraw(user_id)
     if not w:
         return
-    _, gift_key, friends_base, _ = w
-    if friends_base is None:
-        friends_base = 0
+    _, gift_key, _ = w
     need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    done = refs_now - friends_base
-    if done < 0:
-        done = 0
+    done = refs_now
     if done > need:
         done = need
-
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{user_id}"
     text = (
@@ -429,33 +366,25 @@ async def _show_friends_screen(target, user_id, edit_message=False):
         f'Друг должен зайти по ссылке и забрать бонус</blockquote>'
     )
     kb = friends_check_kb()
-
-    if edit_message and isinstance(target, CallbackQuery):
-        try:
-            await target.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            pass
-        return
-
     if isinstance(target, int):
         await bot.send_message(target, text, reply_markup=kb, parse_mode="HTML")
-    elif isinstance(target, CallbackQuery):
-        await target.message.answer(text, reply_markup=kb, parse_mode="HTML")
     else:
         await target.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _create_withdraw_waiting(user_id, gift_key, target):
+    set_waiting_withdraw(user_id, gift_key)
+    await _show_friends_screen(target, user_id)
 
 
 async def _check_and_fulfill_waiting(user_id):
     w = get_waiting_withdraw(user_id)
     if not w:
         return False
-    _, gift_key, friends_base, _ = w
-    if friends_base is None:
-        friends_base = 0
+    _, gift_key, _ = w
     need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    done = refs_now - friends_base
-    if done < need:
+    if refs_now < need:
         return False
     if gift_key not in GIFTS:
         delete_waiting_withdraw(user_id)
@@ -463,7 +392,6 @@ async def _check_and_fulfill_waiting(user_id):
     name, price = GIFTS[gift_key]
     balance = get_balance(user_id)
     if balance < price:
-        delete_waiting_withdraw(user_id)
         return False
     wid = create_withdrawal(user_id, price, gift_key)
     delete_waiting_withdraw(user_id)
@@ -478,7 +406,7 @@ async def _check_and_fulfill_waiting(user_id):
         f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
     )
     try:
-        await _safe_send(user_id, text, parse_mode="HTML")
+        await bot.send_message(user_id, text, parse_mode="HTML")
     except Exception:
         pass
     u = get_user(user_id)
@@ -492,7 +420,8 @@ async def _check_and_fulfill_waiting(user_id):
         print("Ошибка админу:", e)
     return True
 
-# ================== БЭКАП ==================
+
+# ============ БЭКАП ============
 def export_users_to_json():
     import sqlite3
     conn = sqlite3.connect(DB)
@@ -573,9 +502,7 @@ def import_users_from_json(data):
     conn.commit()
     conn.close()
     return count
-
-
-# ================== СТАРТ ==================
+    # ============ СТАРТ ============
 def _parse_start_arg(arg):
     if not arg:
         return None, None
@@ -613,6 +540,7 @@ async def start(message: Message, state: FSMContext):
     if not is_new:
         update_username(message.from_user.id, message.from_user.username)
 
+    # === БОНУС 15 ⭐ за /start (только новым) ===
     if not is_welcome_bonus_paid(message.from_user.id):
         try:
             bonus = int(get_setting("welcome_bonus") or 15)
@@ -629,17 +557,19 @@ async def start(message: Message, state: FSMContext):
             except Exception:
                 pass
 
+    # реферал
     if is_new and referrer and referrer != message.from_user.id:
         create_pending_referral(message.from_user.id, referrer)
         try:
             await bot.send_message(referrer,
                 '<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> '
                 '<b>По твоей ссылке зашёл новый друг!</b>\n\n'
-                'Он должен зайти в раздел «Прочее» и забрать бонус — тогда ты получишь звёзды.',
+                'Он должен зайти в профиль и забрать бонус — тогда ты получишь звёзды.',
                 parse_mode="HTML")
         except Exception:
             pass
 
+    # ad-метка
     if ad_code:
         src = get_ad_source(ad_code)
         if src:
@@ -649,6 +579,7 @@ async def start(message: Message, state: FSMContext):
                          registered=1 if is_new else 0,
                          is_premium=is_premium)
 
+    # приватка
     if get_setting("priv_enabled") == "1":
         priv_text = get_setting("priv_text")
         kb = build_priv_buttons()
@@ -659,6 +590,7 @@ async def start(message: Message, state: FSMContext):
 
     await asyncio.sleep(3)
 
+    # промокод по ссылке
     if promo_code:
         promo = get_promo(promo_code)
         if promo:
@@ -697,7 +629,7 @@ async def start(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "op_check")
 async def op_check_cb(call: CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
-    await call.answer("⏳ Проверяю...", show_alert=False)
+    await call.answer("⏳ Проверяю...")
     await asyncio.sleep(2)
 
     try:
@@ -725,17 +657,10 @@ async def op_check_cb(call: CallbackQuery, state: FSMContext):
         await _go_to_main(user_id, user_id)
         return
 
-    text = get_setting("botohub_text")
-    kb = op_screen_kb(items)
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        pass
+    await call.message.answer("❌ Ты ещё не подписался на все каналы. Попробуй ещё раз.")
 
-    await call.answer("Подписался не на всё — галочки покажут, что осталось",
-                      show_alert=True)
 
-# ================== ЗАРАБОТАТЬ ==================
+# ============ ЗАРАБОТАТЬ ============
 @dp.message(F.text == "Заработать звёзды")
 async def earn(message: Message):
     if not await _guard_ops(message):
@@ -743,7 +668,7 @@ async def earn(message: Message):
     await _send_earn_screen(message.chat.id, message.from_user.id)
 
 
-# ================== ПРОЧЕЕ ==================
+# ============ ПРОФИЛЬ ============
 def _profile_text(uid: int, first_name: str) -> str:
     u = get_user(uid)
     balance = u[2] if u else 0
@@ -752,7 +677,7 @@ def _profile_text(uid: int, first_name: str) -> str:
     pending = get_pending_refs_count(uid)
     place = get_place(uid)
     return (
-        f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОЧЕЕ</b>\n\n'
+        f'<tg-emoji emoji-id="5260399854500191689">👤</tg-emoji> <b>ПРОФИЛЬ</b>\n\n'
         f'<tg-emoji emoji-id="5389099588906922686">🧑</tg-emoji> {name}\n'
         f'<tg-emoji emoji-id="6030656587830399914">🆔</tg-emoji> <code>{uid}</code>\n\n'
         f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji> Баланс: <b>{balance}.00</b>\n'
@@ -777,7 +702,7 @@ async def _render_profile(call: CallbackQuery):
         await call.message.answer(text, reply_markup=profile_kb(), parse_mode="HTML")
 
 
-@dp.message(F.text == "Прочее")
+@dp.message(F.text == "Профиль")
 async def profile(message: Message):
     if not get_user(message.from_user.id):
         await message.answer("Напиши /start")
@@ -785,8 +710,7 @@ async def profile(message: Message):
     if not await _guard_ops(message):
         return
     text = _profile_text(message.from_user.id, message.from_user.first_name)
-    await _send_menu_msg(message.chat.id, message.from_user.id, text,
-                         reply_markup=profile_kb(), parse_mode="HTML")
+    await message.answer(text, reply_markup=profile_kb(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "daily_bonus")
@@ -858,7 +782,7 @@ async def daily_cancel(call: CallbackQuery):
     await _render_profile(call)
 
 
-# ================== ПРОМОКОД ==================
+# ============ ПРОМОКОД (ручной ввод) ============
 @dp.callback_query(F.data == "enter_promo")
 async def cb_enter_promo(call: CallbackQuery, state: FSMContext):
     text = (
@@ -923,7 +847,7 @@ async def user_promo_check(message: Message, state: FSMContext):
         await message.answer(msg_, parse_mode="HTML")
 
 
-# ================== /stat_XXX ==================
+# ============ /stat_XXX ============
 @dp.message(F.text.regexp(r"^/stat_[A-Za-z0-9_]+$"))
 async def ad_stats_cmd(message: Message):
     user_id = message.from_user.id
@@ -934,16 +858,13 @@ async def ad_stats_cmd(message: Message):
         await message.answer("❌ Такой метки не существует.")
         return
     if src[1] != user_id and user_id != ADMIN_ID:
-        await message.answer("❌ У тебя нет доступа к этой)\ метке.")
+        await message.answer("❌ У тебя нет доступа к этой метке.")
         return
 
-    owner_username =n src[2] or ""
-"
-    price_per_click = src[5       ] if len(src) > 5 else )
+    owner_username = src[2] or ""
+    price_per_click = src[5] if len(src) > 5 else 0
 
- 0
-
-    me = await bot.get   _me()
+    me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ad_{code}"
 
     now = datetime.now()
@@ -970,7 +891,10 @@ async def ad_stats_cmd(message: Message):
             f"Переходов: <b>{clicks}</b>\n"
             f"Пользователей: <b>{users}</b> ({pct(users, clicks)}%)\n"
             f"Зарегистрированных: <b>{registered}</b> ({pct(registered, clicks)}%)\n"
-            f"Подписки: <b>{op}</b> ({pct(op, clicks)}% users_total = total["users"]
+            f"Подписки: <b>{op}</b> ({pct(op, clicks)}%)\n"
+        )
+
+    users_total = total["users"]
     blocked = total["blocked"]
     alive = users_total - blocked
     premium = total["premium"]
@@ -998,9 +922,7 @@ async def ad_stats_cmd(message: Message):
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
     await message.answer(text, parse_mode="HTML")
-
-
-# ================== ЗАДАНИЯ ==================
+    # ============ ЗАДАНИЯ ============
 async def show_task(message, link, source="bh", reward=None):
     if reward is None:
         reward = int(get_setting("task_reward"))
@@ -1265,8 +1187,10 @@ async def task_check(call: CallbackQuery):
     balance = get_balance(user_id)
     await _send_reward_and_next(call, msg, reward, balance, user_id)
 
-        # ================== ВЫВОД ==================
+
+# ============ ВЫВОД ============
 async def _show_gifts_with_video(chat_id, user_id):
+    """Показывает видео + текст + 8 кнопок с подарками."""
     video_id = get_setting("withdraw_video_id")
     kb = gifts_kb()
     caption = '<tg-emoji emoji-id="5427236501903655352">❣️</tg-emoji> <b>Выбери подарок</b>'
@@ -1293,14 +1217,13 @@ async def withdraw(message: Message, state: FSMContext):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
+    # если уже висит waiting — показываем экран 2 друга
     w = get_waiting_withdraw(user_id)
     if w:
-        ok = await _check_and_fulfill_waiting(user_id)
-        if ok:
-            return
         await _show_friends_screen(message, user_id)
         return
 
+    # ОП на выводе (доп. спонсоры)
     extra_items = []
     if bh_enabled() and BOTOHUB_TOKEN:
         try:
@@ -1326,13 +1249,23 @@ async def withdraw(message: Message, state: FSMContext):
             parse_mode="HTML")
         return
 
+    # ОП нет → проверяем 2 друга
+    need = _friends_required()
+    refs_now = get_confirmed_refs_count(user_id)
+    if refs_now < need:
+        # показываем экран "2 друга" без waiting (сначала должен выбрать подарок)
+        # на самом деле без gift_key — просто показываем подарки, потом покажем друзей
+        await _show_gifts_with_video(chat_id, user_id)
+        return
+
+    # 2 друга есть → сразу показываем подарки
     await _show_gifts_with_video(chat_id, user_id)
 
 
 @dp.callback_query(F.data == "op_check_wd")
 async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
-    await call.answer("⏳ Проверяю...", show_alert=False)
+    await call.answer("⏳ Проверяю...")
     await asyncio.sleep(2)
 
     still_not_done = []
@@ -1346,21 +1279,7 @@ async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
         still_not_done = [t for t in tasks if not t.get("completed") and t.get("url")]
 
     if still_not_done:
-        try:
-            items = []
-            for t in still_not_done:
-                link = t.get("url")
-                items.append((f"bh_wd:{link}", "Подписаться", link, False))
-            for cid, title, link in list_custom_ops("withdraw"):
-                items.append((f"custom_wd:{cid}", title, link, False))
-            await call.message.edit_text(
-                get_setting("botohub_text"),
-                reply_markup=op_screen_kb(items, confirm_callback="op_check_wd"),
-                parse_mode="HTML")
-        except Exception:
-            pass
-        await call.answer("Подписался не на всё — галочки покажут, что осталось",
-                          show_alert=True)
+        await call.message.answer("❌ Ты ещё не подписался на все каналы. Попробуй ещё раз.")
         return
 
     try:
@@ -1368,6 +1287,15 @@ async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
+    # ОП пройдены → проверяем 2 друга
+    need = _friends_required()
+    refs_now = get_confirmed_refs_count(user_id)
+    if refs_now < need:
+        # Не хватает друзей — показываем подарки, юзер выберет, потом покажем экран друзей
+        await _show_gifts_with_video(user_id, user_id)
+        return
+
+    # друзья есть → показываем подарки
     await _show_gifts_with_video(user_id, user_id)
 
 
@@ -1388,73 +1316,46 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
         return
 
     user_id = call.from_user.id
-
-    existing = get_waiting_withdraw(user_id)
-    if existing and existing[1] != key:
-        delete_waiting_withdraw(user_id)
-
+    need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    set_waiting_withdraw(user_id, key, refs_now)
 
+    if refs_now >= need:
+        # Друзей хватает → создаём заявку
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await create_order(call, key)
+        return
+
+    # Не хватает → создаём waiting и показываем экран друзей
+    set_waiting_withdraw(user_id, key)
     try:
         await call.message.delete()
     except Exception:
         pass
-
-    ok = await _check_and_fulfill_waiting(user_id)
-    if ok:
-        return
-
     await _show_friends_screen(user_id, user_id)
 
 
 @dp.callback_query(F.data == "wd_friends_check")
 async def wd_friends_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
-
+    await call.answer("⏳ Проверяю...")
     ok = await _check_and_fulfill_waiting(user_id)
     if ok:
-        try:
-            await call.answer("✅ Готово! Заявка создана.")
-        except Exception:
-            pass
         try:
             await call.message.delete()
         except Exception:
             pass
         return
-
     w = get_waiting_withdraw(user_id)
     if not w:
-        await call.answer("Заявка не найдена", show_alert=True)
+        await call.message.answer("❌ Заявка не найдена.")
         return
-
-    _, gift_key, friends_base, _ = w
-    if friends_base is None:
-        friends_base = 0
     need = _friends_required()
     refs_now = get_confirmed_refs_count(user_id)
-    done = refs_now - friends_base
-    if done < 0:
-        done = 0
-    if done > need:
-        done = need
-
-    left = need - done
-
-    if done >= need:
-        await call.answer("✅ Условие выполнено!")
-    else:
-        await call.answer(
-            f"👥 Прогресс: {done}/{need}\n"
-            f"Осталось пригласить: {left}",
-            show_alert=False
-        )
-
-    try:
-        await _show_friends_screen(call, user_id, edit_message=True)
-    except Exception:
-        pass
+    done = min(need, refs_now)
+    await call.message.answer(f"❌ Ещё не все друзья. Прогресс: {done}/{need}")
 
 
 async def create_order(call: CallbackQuery, key):
@@ -1486,9 +1387,7 @@ async def create_order(call: CallbackQuery, key):
             reply_markup=admin_wd_kb(wid), parse_mode="HTML")
     except Exception as e:
         print("Ошибка админу:", e)
-
-
-# ================== АДМИНКА ==================
+        # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -1529,7 +1428,6 @@ def bh_menu_text():
         f"📌 Свои ОП на входе: <b>{get_setting('op_custom_entry_count')}</b> (0 = все)\n"
         f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n"
         f"🔤 Текст кнопок: <code>{get_setting('botohub_btn_text')}</code>\n\n"
-        f"⏱ Кэш ОП: <b>{OP_CACHE_HOURS}ч</b>\n\n"
         f"📝 Текст:\n{get_setting('botohub_text')[:80]}..."
     )
 
@@ -1572,7 +1470,7 @@ async def bh_save_text(message: Message, state: FSMContext):
 async def bh_edit_btn(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("🔤 Пришли текст для кнопок:")
+    await call.message.answer("🔤 Пришли текст для кнопок (например, «Подписаться»):")
     await state.set_state(BHEdit.waiting_btn)
 
 
@@ -1967,187 +1865,23 @@ async def cop_del_id(message: Message, state: FSMContext):
 
 
 # ---------- ЗАЯВКИ ----------
-PAGE_SIZE = 10
-
-
-def _render_wd_list(page=0):
-    count = get_pending_withdrawals_count()
-    if count == 0:
-        return "📭 Нет активных заявок", back_admin_kb()
-    pages = (count + PAGE_SIZE - 1) // PAGE_SIZE
-    if page < 0:
-        page = 0
-    if page >= pages:
-        page = pages - 1
-    rows = get_pending_withdrawals_page(offset=page * PAGE_SIZE, limit=PAGE_SIZE)
-    text = (
-        f"📋 <b>Активные заявки</b>\n\n"
-        f"Всего: <b>{count}</b> | Страница <b>{page + 1}/{pages}</b>\n\n"
-        f"Нажми на заявку, чтобы открыть карточку."
-    )
-    return text, wd_list_kb(count, page, pages, rows)
-
-
 @dp.callback_query(F.data == "wd_list")
 async def wd_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    text, kb = _render_wd_list(0)
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
-
-
-@dp.callback_query(F.data.startswith("wd_page:"))
-async def wd_page(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    rows = get_pending_withdrawals()
+    if not rows:
+        await call.message.edit_text("📭 Нет активных заявок", reply_markup=back_admin_kb())
         return
-    try:
-        page = int(call.data.split(":")[1])
-    except Exception:
-        page = 0
-    text, kb = _render_wd_list(page)
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        pass
-    await call.answer()
-
-
-@dp.callback_query(F.data == "wd_noop")
-async def wd_noop(call: CallbackQuery):
-    await call.answer()
-
-
-@dp.callback_query(F.data.startswith("wd_view:"))
-async def wd_view(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    try:
-        wid = int(call.data.split(":")[1])
-    except Exception:
-        await call.answer("Ошибка")
-        return
-    row = get_withdrawal(wid)
-    if not row:
-        await call.answer("Не найдена", show_alert=True)
-        return
-    _, user_id, amount, gift_key, status = row
-    name = GIFTS.get(gift_key, ("—", 0))[0]
-    u = get_user(user_id)
-    uname = f"@{u[1]}" if u and u[1] else "без username"
-    status_icon = {"pending": "⏳", "completed": "✅", "rejected": "❌"}.get(status, "•")
-    text = (
-        f"💸 <b>Заявка #{wid}</b> {status_icon}\n\n"
-        f"👤 {uname}\n"
-        f"🆔 <code>{user_id}</code>\n"
-        f"🎁 {name}\n"
-        f"💰 {amount} ⭐\n"
-        f"📌 Статус: <b>{status}</b>"
-    )
-    kb = admin_wd_kb(wid) if status == "pending" else back_admin_kb()
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    await call.answer()
-
-
-@dp.callback_query(F.data == "wd_bulk_ok_ask")
-async def wd_bulk_ok_ask(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    count = get_pending_withdrawals_count()
-    if count == 0:
-        await call.answer("Нет заявок", show_alert=True)
-        return
-    try:
-        await call.message.edit_text(
-            f"⚠️ <b>Подтверждение</b>\n\n"
-            f"Одобрить <b>{count}</b> заявок?\n\n"
-            f"Это действие нельзя отменить.",
-            reply_markup=wd_bulk_confirm_kb("ok", count), parse_mode="HTML")
-    except Exception:
-        pass
-    await call.answer()
-
-
-@dp.callback_query(F.data == "wd_bulk_no_ask")
-async def wd_bulk_no_ask(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    count = get_pending_withdrawals_count()
-    if count == 0:
-        await call.answer("Нет заявок", show_alert=True)
-        return
-    try:
-        await call.message.edit_text(
-            f"⚠️ <b>Подтверждение</b>\n\n"
-            f"Отклонить <b>{count}</b> заявок?\n"
-            f"Звёзды вернутся юзерам.",
-            reply_markup=wd_bulk_confirm_kb("no", count), parse_mode="HTML")
-    except Exception:
-        pass
-    await call.answer()
-
-
-@dp.callback_query(F.data == "wd_bulk_ok_do")
-async def wd_bulk_ok_do(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    rows = bulk_accept_withdrawals()
-    await call.answer(f"✅ Одобрено: {len(rows)}")
-    sent = 0
-    failed = 0
+    await call.message.edit_text(f"📋 Активных заявок: {len(rows)}", reply_markup=back_admin_kb())
     for wid, user_id, amount, gift_key in rows:
-        name = GIFTS.get(gift_key, ("подарок", 0))[0]
-        try:
-            await bot.send_message(user_id,
-                f"✅ <b>Заявка #{wid} одобрена!</b>\n\n🎁 {name} отправлен тебе.",
-                parse_mode="HTML")
-            sent += 1
-        except Exception as e:
-            failed += 1
-            es = str(e).lower()
-            if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-                try:
-                    mark_user_blocked(user_id)
-                except Exception:
-                    pass
-        await asyncio.sleep(0.05)
-    await call.message.edit_text(
-        f"✅ <b>Готово</(messageb>\n\n"
-        f"Одоб:рено: <b>{len(rows)}</b Message>\n"
-        f"Уведомлений доставлено: <b>{sent}</b>\n"
-        f", stateНе: доставлено: <b>{failed}</b>",
-        reply_markup=back_admin_kb(), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "wd_bulk_no_do")
-async def wd_bulk_no_do(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return
-    rows = bulk_reject_withdrawals()
-    await call.answer(f"❌ Отклонено: {len(rows)}")
-    sent = 0
-    for wid, user_id, amount, gift_key in rows:
-        try:
-            await bot.send_message(user_id, f"❌ Заявка #{wid} отклонена.\n{amount} ⭐ возвращены.")
-            sent += 1
-        except Exception as e:
-            es = str(e).lower()
-            if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-                try:
-                    mark_user_blocked(user_id)
-                except Exception:
-                    pass
-        await asyncio.sleep(0.05)
-    await call.message.edit_text(
-        f"❌ <b>Готово</b>\n\n"
-        f"Отклонено: <b>{len(rows)}</b>\n"
-        f"Уведомлений доставлено: <b>{sent}</b>",
-        reply_markup=back_admin_kb(), parse_mode="HTML")
+        name = GIFTS.get(gift_key, ("—", 0))[0]
+        u = get_user(user_id)
+        uname = f"@{u[1]}" if u and u[1] else "без username"
+        await call.message.answer(
+            f"💸 <b>Заявка #{wid}</b>\n👤 {uname}\n🆔 <code>{user_id}</code>\n"
+            f"🎁 {name}\n💰 {amount} ⭐",
+            reply_markup=admin_wd_kb(wid), parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("wd_ok:"))
@@ -2169,17 +1903,10 @@ async def wd_ok(call: CallbackQuery):
         await bot.send_message(user_id,
             f"✅ <b>Заявка #{wid} одобрена!</b>\n\n🎁 {name} отправлен тебе.",
             parse_mode="HTML")
-    except Exception as e:
-        es = str(e).lower()
-        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-            try:
-                mark_user_blocked(user_id)
-            except Exception:
-                pass
+    except Exception:
+        pass
     try:
-        await call.message.edit_text(
-            f"💸 <b>Заявка #{wid}</b> ✅\n\nВЫПОЛНЕНО",
-            reply_markup=back_admin_kb(), parse_mode="HTML")
+        await call.message.edit_text(call.message.text + "\n\n✅ ВЫПОЛНЕНО", parse_mode="HTML")
     except Exception:
         pass
 
@@ -2204,9 +1931,7 @@ async def wd_no(call: CallbackQuery):
     except Exception:
         pass
     try:
-        await call.message.edit_text(
-            f"💸 <b>Заявка #{wid}</b> ❌\n\nОТКЛОНЕНО",
-            reply_markup=back_admin_kb(), parse_mode="HTML")
+        await call.message.edit_text(call.message.text + "\n\n❌ ОТКЛОНЕНО", parse_mode="HTML")
     except Exception:
         pass
 
@@ -2276,7 +2001,7 @@ async def priv_edit_buttons(call: CallbackQuery, state: FSMContext):
 
 
 @dp.message(PrivEdit.waiting_buttons)
-async def priv_save_buttons FSMContext):
+async def priv_save_buttons(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     text = message.text.strip()
@@ -2381,14 +2106,11 @@ async def user_show(message: Message, state: FSMContext):
     refs = get_confirmed_refs_count(uid)
     pending = get_pending_refs_count(uid)
     reg = (u[5] or "")[:16].replace("T", " ")
-    blocked = "🚫 да" if is_user_blocked(uid) else "✅ нет"
     await state.clear()
     await message.answer(
         f"👤 <b>Юзер</b>\n\n🧑 @{u[1] or '—'}\n🆔 <code>{uid}</code>\n"
         f"⭐ Баланс: <b>{balance}</b>\n👥 Друзей: <b>{refs}</b>\n"
-        f"⏳ Ожидают: <b>{pending}</b>\n"
-        f"🚫 Заблокировал: <b>{blocked}</b>\n"
-        f"📅 Регистрация: {reg}",
+        f"⏳ Ожидают: <b>{pending}</b>\n📅 Регистрация: {reg}",
         reply_markup=user_view_kb(uid), parse_mode="HTML")
 
 
@@ -2433,8 +2155,23 @@ async def wd_video_add(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.answer("🎬 Пришли видео (6 сек):")
+    await state.set_state(BroadcastFlow.waiting_photo)  # переиспользуем
     await state.update_data(wd_video=True)
-    await state.set_state(BroadcastFlow.waiting_media)
+
+
+@dp.message(BroadcastFlow.waiting_photo)
+async def wd_video_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    if not data.get("wd_video"):
+        return
+    if not message.video:
+        await message.answer("⚠️ Нужно именно видео.")
+        return
+    set_setting("withdraw_video_id", message.video.file_id)
+    await state.clear()
+    await message.answer("✅ Видео сохранено", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data == "wd_video_del")
@@ -2457,7 +2194,6 @@ async def stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     s = get_stats()
-    e = get_extended_stats()
     top_bal = get_top_balance(10)
     top_refs = get_top_refs(10)
 
@@ -2475,43 +2211,22 @@ async def stats(call: CallbackQuery):
         ref_lines += f"{prefix} {name} — <b>{refs}</b> 👥\n"
 
     text = (
-        f"📊 <b>РАСШИРЕННАЯ СТАТИСТИКА</b>\n\n"
-
-        f"👥 <b>Пользователи:</b>\n"
-        f"   Всего: <b>{e['total']}</b>\n"
-        f"   Новых за 7 дней: <b>{e['new_7d']}</b>\n"
-        f"   Новых за 30 дней: <b>{e['new_30d']}</b>\n"
-        f"   Пришли по реф-ссылке: <b>{e['with_ref']}</b>\n"
-        f"   Активных за 24ч: <b>{e['active_24h']}</b>\n"
-        f"   🚫 Заблокировали бота: <b>{e['blocked']}</b>\n\n"
-
-        f"💰 <b>Баланс и звёзды:</b>\n"
-        f"   Общий баланс: <b>{s['total_balance']}</b> ⭐\n"
-        f"   Средний баланс: <b>{e['avg_balance']}</b> ⭐\n"
-        f"   Выведено звёзд: <b>{e['total_withdrawn_stars']}</b> ⭐\n"
-        f"   В ожидании: <b>{e['pending_stars']}</b> ⭐\n\n"
-
-        f"👥 <b>Рефералы:</b>\n"
-        f"   Подтверждённых: <b>{e['confirmed_refs']}</b>\n\n"
-
-        f"🎯 <b>Активность:</b>\n"
-        f"   ОП пройдено: <b>{e['ops_passed']}</b>\n"
-        f"   Своих заданий сделано: <b>{e['ctasks_done']}</b>\n\n"
-
-        f"📋 <b>Заявки:</b>\n"
+        f"📊 <b>СТАТИСТИКА</b>\n\n"
+        f"👥 Всего юзеров: <b>{s['total']}</b>\n"
+        f"📅 Новых сегодня: <b>{s['today']}</b>\n"
+        f"💰 Общий баланс: <b>{s['total_balance']}</b> ⭐\n"
+        f"👥 Подтверждённых рефералов: <b>{s['total_refs']}</b>\n\n"
+        f"📋 <b>Заявки на вывод:</b>\n"
         f"   ⏳ В ожидании: <b>{s['pending']}</b>\n"
         f"   ✅ Выполнено: <b>{s['done']}</b>\n"
-        f"   ❌ Отклонено: <b>{s['rejected']}</b>\n\n"
-
+        f"   ❌ Отклонено: <b>{s['rejected']}</b>\n"
+        f"   💫 Выдано звёзд: <b>{s['total_stars']}</b>\n\n"
         f"🏆 <b>Топ-10 по балансу:</b>\n{bal_lines or '   —'}\n"
         f"👥 <b>Топ-10 по рефералам:</b>\n{ref_lines or '   —'}"
     )
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
-    try:
-        await call.message.edit_text(text, reply_markup=stats_kb(), parse_mode="HTML")
-    except Exception:
-        await call.message.answer(text, parse_mode="HTML")
+    await call.message.edit_text(text, reply_markup=stats_kb(), parse_mode="HTML")
 
 
 # ---------- НАСТРОЙКИ ----------
@@ -2567,8 +2282,7 @@ async def set_value_save(message: Message, state: FSMContext):
     set_setting(key, value)
     await state.clear()
     await message.answer(f"✅ Сохранено: {key}", reply_markup=back_admin_kb())
-
-        # ---------- ПРОМОКОДЫ (АДМИН) ----------
+    # ---------- ПРОМОКОДЫ ----------
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -2692,10 +2406,10 @@ async def promo_uses_step(message: Message, state: FSMContext):
     link = f"https://t.me/{me.username}?start=promo_{data['code']}"
     await message.answer(
         f"✅ <b>Промокод</b> <code>{data['code']}</code> <b>создан!</b>\n\n"
-        f"💫 Тип: обычный (без ОП)\n"
-        f"💰 Сумма: <b>{data['amount']} ⭐</b>\n"
-        f"🎯 Активаций: <b>{uses}</b>\n\n"
-        f"🔗 <b>Ссылка для юзеров:</b>\n"
+        f"<tg-emoji emoji-id=\"5469741319330996757\">💫</tg-emoji> Тип: обычный (без ОП)\n"
+        f"<tg-emoji emoji-id=\"6025976946083500432\">💰</tg-emoji> Сумма: <b>{data['amount']} ⭐</b>\n"
+        f"<tg-emoji emoji-id=\"5350460637182993292\">🎯</tg-emoji> Активаций: <b>{uses}</b>\n\n"
+        f"<tg-emoji emoji-id=\"5271604874419647061\">🔗</tg-emoji> <b>Ссылка для юзеров:</b>\n"
         f"<code>{link}</code>\n\n"
         f"Юзер жмёт → сразу получает <b>{data['amount']} ⭐</b> без ОП.",
         parse_mode="HTML")
@@ -2766,10 +2480,10 @@ async def pcreate_done(call: CallbackQuery, state: FSMContext):
     try:
         await call.message.edit_text(
             f"✅ <b>Промокод</b> <code>{code}</code> <b>создан!</b>\n\n"
-            f"📢 Тип: за ОП\n"
-            f"💰 Сумма: <b>{amount_min}-{amount} ⭐</b>\n"
-            f"🎯 Активаций: <b>{uses}</b>\n"
-            f"🔗 <b>Ссылка:</b>\n"
+            f"<tg-emoji emoji-id=\"5370599459661045441\">📢</tg-emoji> Тип: за ОП\n"
+            f"<tg-emoji emoji-id=\"6025976946083500432\">💰</tg-emoji> Сумма: <b>{amount_min}-{amount} ⭐</b>\n"
+            f"<tg-emoji emoji-id=\"5350460637182993292\">🎯</tg-emoji> Активаций: <b>{uses}</b>\n"
+            f"<tg-emoji emoji-id=\"5271604874419647061\">🔗</tg-emoji> <b>Ссылка:</b>\n"
             f"<code>{link}</code>",
             parse_mode="HTML")
     except Exception:
@@ -2802,12 +2516,14 @@ async def promo_view_cb(call: CallbackQuery):
     uses_list = get_promo_uses_list(code, 10)
 
     if p_type == "op":
-        type_line = "📢 Тип: за ОП"
+        type_line = f'<tg-emoji emoji-id="5370599459661045441">📢</tg-emoji> Тип: за ОП'
         sum_line = f"{amount_min}-{amount} ⭐"
     else:
-        type_line = "💫 Тип: обычный"
+        type_line = f'<tg-emoji emoji-id="5469741319330996757">💫</tg-emoji> Тип: обычный'
         sum_line = f"{amount} ⭐"
 
+    total_given = 0
+    # сумма выданных звёзд — считаем: если обычный, то used * amount; если ОП — приблизительно среднее
     if p_type == "op":
         avg = (amount + amount_min) // 2 if amount_min else amount
         total_given = used * avg
@@ -2815,11 +2531,11 @@ async def promo_view_cb(call: CallbackQuery):
         total_given = used * amount
 
     text = (
-        f"📊 <b>Промокод</b> <code>{code}</code>\n\n"
+        f'<tg-emoji emoji-id="5203993413346680064">📊</tg-emoji> <b>Промокод</b> <code>{code}</code>\n\n'
         f"{type_line}\n"
-        f"💰 Сумма: <b>{sum_line}</b>\n"
-        f"🎯 Активаций: <b>{used} / {mx}</b>\n"
-        f"⭐ Выдано звёзд: <b>{total_given}</b>\n\n"
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Сумма: <b>{sum_line}</b>\n'
+        f'<tg-emoji emoji-id="5350460637182993292">🎯</tg-emoji> Активаций: <b>{used} / {mx}</b>\n'
+        f'<tg-emoji emoji-id="5895708410447401643">⭐</tg-emoji> Выдано звёзд: <b>{total_given}</b>\n\n'
     )
     if uses_list:
         text += "<b>Последние активации:</b>\n"
@@ -3039,31 +2755,18 @@ def _get_broadcast_state():
     return BROADCAST_STATE.setdefault(ADMIN_ID, {})
 
 
-def _media_label(b):
-    mt = b.get("media_type")
-    if mt == "photo":
-        return "🖼 фото"
-    if mt == "video":
-        return "🎬 видео"
-    if mt == "animation":
-        return "🎞 GIF"
-    if mt == "sticker":
-        return "🎨 стикер"
-    return "нет"
-
-
 def broadcast_menu_text():
     b = _get_broadcast_state()
+    photo = "есть" if b.get("photo_id") else "нет"
     count = b.get("count") or get_setting("broadcast_batch_default") or "всем"
     btns = "есть" if b.get("buttons") else "нет"
     text_prev = (b.get("text") or "—")[:60]
     return (
         f"📢 <b>Рассылка</b>\n\n"
         f"📝 Текст: {text_prev}...\n"
-        f"📎 Медиа: <b>{_media_label(b)}</b>\n"
+        f"🖼 Фото: <b>{photo}</b>\n"
         f"🔗 Кнопки: <b>{btns}</b>\n"
-        f"👥 Количество: <b>{count}</b>\n\n"
-        f"⚠️ Стикер уйдёт с кнопками, текст — отдельно."
+        f"👥 Количество: <b>{count}</b>"
     )
 
 
@@ -3097,61 +2800,35 @@ async def bc_save_text(message: Message, state: FSMContext):
     await message.answer("✅ Текст сохранён", reply_markup=back_admin_kb())
 
 
-@dp.callback_query(F.data == "bc_edit_media")
-async def bc_edit_media(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "bc_edit_photo")
+async def bc_edit_photo(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer(
-        "📎 Пришли медиа:\n\n"
-        "🖼 фото\n🎬 видео\n🎞 GIF\n🎨 стикер\n\n"
-        "Первое сообщение — то, что пойдёт в рассылку.",
-        parse_mode="HTML")
-    await state.update_data(bc_media=True)
-    await state.set_state(BroadcastFlow.waiting_media)
+    await call.message.answer("🖼 Пришли фото:")
+    await state.update_data(bc_photo=True)
+    await state.set_state(BroadcastFlow.waiting_photo)
 
 
-@dp.message(BroadcastFlow.waiting_media)
-async def bc_save_media(message: Message, state: FSMContext):
+@dp.message(BroadcastFlow.waiting_photo)
+async def bc_save_photo(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     data = await state.get_data()
-
-    if data.get("wd_video"):
-        if not message.video:
-            await message.answer("⚠️ Нужно именно видео.")
-            return
-        set_setting("withdraw_video_id", message.video.file_id)
-        await state.clear()
-        await message.answer("✅ Видео сохранено", reply_markup=back_admin_kb())
+    if not data.get("bc_photo"):
+        return  # это видео вывода
+    if not message.photo:
+        await message.answer("⚠️ Нужно фото.")
         return
-
-    b = _get_broadcast_state()
-    if message.photo:
-        b["media_type"] = "photo"
-        b["media_id"] = message.photo[-1].file_id
-    elif message.video:
-        b["media_type"] = "video"
-        b["media_id"] = message.video.file_id
-    elif message.animation:
-        b["media_type"] = "animation"
-        b["media_id"] = message.animation.file_id
-    elif message.sticker:
-        b["media_type"] = "sticker"
-        b["media_id"] = message.sticker.file_id
-    else:
-        await message.answer("⚠️ Нужно фото, видео, GIF или стикер.")
-        return
+    _get_broadcast_state()["photo_id"] = message.photo[-1].file_id
     await state.clear()
-    await message.answer(f"✅ Сохранено: {_media_label(b)}", reply_markup=back_admin_kb())
+    await message.answer("✅ Фото сохранено", reply_markup=back_admin_kb())
 
 
 @dp.callback_query(F.data == "bc_del_photo")
 async def bc_del_photo(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    b = _get_broadcast_state()
-    b.pop("media_id", None)
-    b.pop("media_type", None)
+    _get_broadcast_state().pop("photo_id", None)
     await call.answer("🗑 Убрано")
     try:
         await call.message.edit_text(broadcast_menu_text(),
@@ -3256,98 +2933,29 @@ def _build_bc_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _send_bc_to_user(uid, b, kb):
-    text = b.get("text") or ""
-    mt = b.get("media_type")
-    mid = b.get("media_id")
-
-    try:
-        if not mt:
-            await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
-            return True
-
-        if mt == "photo":
-            await bot.send_photo(uid, mid, caption=text, reply_markup=kb, parse_mode="HTML")
-            return True
-        if mt == "video":
-            await bot.send_video(uid, mid, caption=text, reply_markup=kb, parse_mode="HTML")
-            return True
-        if mt == "animation":
-            await bot.send_animation(uid, mid, caption=text, reply_markup=kb, parse_mode="HTML")
-            return True
-        if mt == "sticker":
-            await bot.send_sticker(uid, mid, reply_markup=kb)
-            if text:
-                await bot.send_message(uid, text, parse_mode="HTML")
-            return True
-    except Exception as e:
-        es = str(e).lower()
-        if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
-            return "blocked"
-        if "parse entities" in es or "unclosed" in es or "can't parse" in es:
-            try:
-                if not mt:
-                    await bot.send_message(uid, text, reply_markup=kb)
-                elif mt == "photo":
-                    await bot.send_photo(uid, mid, caption=text, reply_markup=kb)
-                elif mt == "video":
-                    await bot.send_video(uid, mid, caption=text, reply_markup=kb)
-                elif mt == "animation":
-                    await bot.send_animation(uid, mid, caption=text, reply_markup=kb)
-                elif mt == "sticker":
-                    await bot.send_sticker(uid, mid, reply_markup=kb)
-                    if text:
-                        await bot.send_message(uid, text, parse_mode="HTML")
-                return True
-            except Exception as e2:
-                es2 = str(e2).lower()
-                if "blocked" in es2 or "chat not found" in es2 or "user is deactivated" in es2:
-                    return "blocked"
-                return False
-        return False
-    return False
-
-
 @dp.callback_query(F.data == "bc_preview")
 async def bc_preview(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     b = _get_broadcast_state()
     text = b.get("text")
-    mt = b.get("media_type")
-    mid = b.get("media_id")
-    if not text and not mt:
-        await call.answer("Нет ни текста, ни медиа", show_alert=True)
+    if not text:
+        await call.answer("Нет текста", show_alert=True)
         return
     kb = _build_bc_kb()
     try:
-        if not mt:
-            await call.message.answer(text or "—", reply_markup=kb, parse_mode="HTML")
-        elif mt == "photo":
-            await call.message.answer_photo(mid, caption=text or "", reply_markup=kb, parse_mode="HTML")
-        elif mt == "video":
-            await call.message.answer_video(mid, caption=text or "", reply_markup=kb, parse_mode="HTML")
-        elif mt == "animation":
-            await call.message.answer_animation(mid, caption=text or "", reply_markup=kb, parse_mode="HTML")
-        elif mt == "sticker":
-            await call.message.answer_sticker(mid, reply_markup=kb)
-            if text:
-                await call.message.answer(text, parse_mode="HTML")
+        if b.get("photo_id"):
+            await call.message.answer_photo(b["photo_id"], caption=text,
+                                             reply_markup=kb, parse_mode="HTML")
+        else:
+            await call.message.answer(text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         await call.message.answer(f"⚠️ Ошибка парсинга: {e}\n\nПоказываю без форматирования.")
         try:
-            if not mt:
-                await call.message.answer(text or "—", reply_markup=kb)
-            elif mt == "photo":
-                await call.message.answer_photo(mid, caption=text or "", reply_markup=kb)
-            elif mt == "video":
-                await call.message.answer_video(mid, caption=text or "", reply_markup=kb)
-            elif mt == "animation":
-                await call.message.answer_animation(mid, caption=text or "", reply_markup=kb)
-            elif mt == "sticker":
-                await call.message.answer_sticker(mid, reply_markup=kb)
-                if text:
-                    await call.message.answer(text)
+            if b.get("photo_id"):
+                await call.message.answer_photo(b["photo_id"], caption=text, reply_markup=kb)
+            else:
+                await call.message.answer(text, reply_markup=kb)
         except Exception as e2:
             await call.message.answer(f"❌ {e2}")
     await call.message.answer("👁 Предпросмотр готов.", reply_markup=broadcast_preview_kb())
@@ -3358,8 +2966,8 @@ async def bc_send(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     b = _get_broadcast_state()
-    if not b.get("text") and not b.get("media_id"):
-        await call.answer("Нет ни текста, ни медиа", show_alert=True)
+    if not b.get("text"):
+        await call.answer("Нет текста", show_alert=True)
         return
     await call.message.edit_text(
         "📢 Проверь предпросмотр выше и нажми кнопку:",
@@ -3370,11 +2978,13 @@ async def bc_send(call: CallbackQuery):
 async def bc_start(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-        b = _get_broadcast_state()
-    if not b.get("text") and not b.get("media_id"):
-        await call.answer("Нет ни текста, ни медиа", show_alert=True)
-        return
+    b = _get_broadcast_state()
+    text = b.get("text")
+    photo_id = b.get("photo_id")
     count = b.get("count") or 0
+    if not text:
+        await call.answer("Нет текста", show_alert=True)
+        return
     kb = _build_bc_kb()
 
     users = get_all_user_ids()
@@ -3388,18 +2998,29 @@ async def bc_start(call: CallbackQuery):
     errors = 0
     blocked = 0
     for i, uid in enumerate(users, 1):
-        res = await _send_bc_to_user(uid, b, kb)
-        if res is True:
+        try:
+            if photo_id:
+                await bot.send_photo(uid, photo_id, caption=text,
+                                     reply_markup=kb, parse_mode="HTML")
+            else:
+                await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
             sent += 1
-        elif res == "blocked":
-            blocked += 1
-            try:
-                mark_user_blocked(uid)
-                mark_ad_user_blocked(uid)
-            except Exception:
-                pass
-        else:
+        except Exception as e:
+            es = str(e).lower()
+            if "parse entities" in es or "unclosed" in es or "can't parse" in es:
+                try:
+                    if photo_id:
+                        await bot.send_photo(uid, photo_id, caption=text, reply_markup=kb)
+                    else:
+                        await bot.send_message(uid, text, reply_markup=kb)
+                    sent += 1
+                    continue
+                except Exception as e2:
+                    print(f"bc fallback: {e2}")
             errors += 1
+            if "blocked" in es or "chat not found" in es or "user is deactivated" in es:
+                blocked += 1
+                mark_ad_user_blocked(uid)
         if i % 30 == 0:
             try:
                 await call.message.edit_text(f"📢 Рассылка... ({i}/{total})")
@@ -3492,7 +3113,7 @@ async def referral_watcher():
                 try:
                     await bot.send_message(referrer_id,
                         f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> '
-                        f'{uname} зашёл по твоей ссылке, но не забрал бонус в разделе «Прочее».',
+                        f'{uname} зашёл по твоей ссылке, но не забрал бонус.',
                         parse_mode="HTML")
                 except Exception:
                     pass
@@ -3518,17 +3139,18 @@ async def referral_watcher():
         await asyncio.sleep(60)
 
 
-# ================== ФОН: 3 ДРУГА ==================
+# ================== ФОН: 2 ДРУГА ==================
 async def withdraw_watcher():
+    """Каждую минуту проверяет, набрали ли юзеры нужное число друзей."""
     while True:
         try:
             import sqlite3
             conn = sqlite3.connect(DB)
             cur = conn.cursor()
-            cur.execute("SELECT user_id FROM withdraw_waiting")
+            cur.execute("SELECT user_id, gift_key FROM withdraw_waiting")
             rows = cur.fetchall()
             conn.close()
-            for (user_id,) in rows:
+            for user_id, gift_key in rows:
                 try:
                     await _check_and_fulfill_waiting(user_id)
                 except Exception as e:
@@ -3536,16 +3158,6 @@ async def withdraw_watcher():
         except Exception as e:
             print("withdraw_watcher error:", e)
         await asyncio.sleep(60)
-
-
-# ================== ФОН: КЭШ ОП ==================
-async def op_cache_cleaner():
-    while True:
-        try:
-            clear_expired_op_cache(OP_CACHE_HOURS)
-        except Exception as e:
-            print("op_cache_cleaner error:", e)
-        await asyncio.sleep(3600)
 
 
 # ================== ФОН: АВТО-БЭКАП ==================
@@ -3598,7 +3210,6 @@ async def main():
     init_db()
     asyncio.create_task(referral_watcher())
     asyncio.create_task(withdraw_watcher())
-    asyncio.create_task(op_cache_cleaner())
     asyncio.create_task(daily_backup())
     print("Бот запущен")
     print(f"BOT_ID: {BOT_ID}")
