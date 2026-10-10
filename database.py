@@ -32,13 +32,6 @@ def init_db():
         PRIMARY KEY (user_id, op_key)
     )""")
 
-    cur.execute("""CREATE TABLE IF NOT EXISTS op_passed_cache (
-        user_id INTEGER,
-        op_key TEXT,
-        passed_at TEXT,
-        PRIMARY KEY (user_id, op_key)
-    )""")
-
     cur.execute("""CREATE TABLE IF NOT EXISTS ad_sources (
         code TEXT PRIMARY KEY,
         owner_id INTEGER,
@@ -103,15 +96,12 @@ def init_db():
     cols = {r[1] for r in cur.fetchall()}
     if "friends_base" not in cols:
         cur.execute("ALTER TABLE withdraw_waiting ADD COLUMN friends_base INTEGER DEFAULT 0")
-    cur.execute("UPDATE withdraw_waiting SET friends_base = 0 WHERE friends_base IS NULL")
 
     cur.execute("PRAGMA table_info(users)")
     cols = {r[1] for r in cur.fetchall()}
     if "welcome_bonus_paid" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN welcome_bonus_paid INTEGER DEFAULT 0")
         cur.execute("UPDATE users SET welcome_bonus_paid = 1")
-    if "blocked" not in cols:
-        cur.execute("ALTER TABLE users ADD COLUMN blocked INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -239,33 +229,6 @@ def mark_welcome_bonus_paid(user_id):
     conn.close()
 
 
-# ================== BLOCKED ==================
-def mark_user_blocked(user_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET blocked = 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-
-def is_user_blocked(user_id):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT blocked FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return bool(row and row[0])
-
-
-def get_blocked_count():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users WHERE blocked = 1")
-    n = cur.fetchone()[0]
-    conn.close()
-    return n
-
-
 # ================== REFERRALS ==================
 def create_pending_referral(user_id, referrer_id):
     conn = sqlite3.connect(DB)
@@ -382,51 +345,6 @@ def get_pending_withdrawals():
     return rows
 
 
-def get_pending_withdrawals_count():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'")
-    n = cur.fetchone()[0]
-    conn.close()
-    return n
-
-
-def get_pending_withdrawals_page(offset=0, limit=10):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE status = 'pending' ORDER BY id LIMIT ? OFFSET ?",
-                (limit, offset))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def bulk_accept_withdrawals():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE status = 'pending'")
-    rows = cur.fetchall()
-    if rows:
-        cur.execute("UPDATE withdrawals SET status = 'completed' WHERE status = 'pending'")
-    conn.commit()
-    conn.close()
-    return rows
-
-
-def bulk_reject_withdrawals():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE status = 'pending'")
-    rows = cur.fetchall()
-    for wid, user_id, amount, gift in rows:
-        cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-    if rows:
-        cur.execute("UPDATE withdrawals SET status = 'rejected' WHERE status = 'pending'")
-    conn.commit()
-    conn.close()
-    return rows
-
-
 def get_withdrawal_history(limit=50):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -468,68 +386,6 @@ def get_stats():
     return {"total": total, "today": today, "total_balance": total_balance,
             "total_refs": total_refs, "pending": pending, "done": done,
             "rejected": rejected, "total_stars": total_stars}
-
-
-def get_extended_stats():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE blocked = 1")
-    blocked = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE registered_at >= ?",
-                ((datetime.now() - timedelta(days=7)).isoformat(),))
-    new_7d = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE registered_at >= ?",
-                ((datetime.now() - timedelta(days=30)).isoformat(),))
-    new_30d = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM users")
-    total = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COALESCE(SUM(balance),0) FROM users")
-    total_balance = cur.fetchone()[0] or 0
-
-    avg_balance = round(total_balance / total, 1) if total else 0
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE last_bonus >= ?",
-                ((datetime.now() - timedelta(hours=24)).isoformat(),))
-    active_24h = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM users WHERE referrer_id IS NOT NULL")
-    with_ref = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'completed'")
-    total_withdrawn_stars = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE status = 'pending'")
-    pending_stars = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM referrals WHERE status = 'confirmed'")
-    confirmed_refs = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM user_ops")
-    ops_passed = cur.fetchone()[0] or 0
-
-    cur.execute("SELECT COUNT(*) FROM custom_tasks_done")
-    ctasks_done = cur.fetchone()[0] or 0
-
-    conn.close()
-    return {
-        "blocked": blocked,
-        "new_7d": new_7d,
-        "new_30d": new_30d,
-        "total": total,
-        "avg_balance": avg_balance,
-        "active_24h": active_24h,
-        "with_ref": with_ref,
-        "total_withdrawn_stars": total_withdrawn_stars,
-        "pending_stars": pending_stars,
-        "confirmed_refs": confirmed_refs,
-        "ops_passed": ops_passed,
-        "ctasks_done": ctasks_done,
-    }
 
 
 def get_top_balance(limit=10):
@@ -818,36 +674,6 @@ def has_op_passed(user_id, op_key):
     return row is not None
 
 
-# ================== OP CACHE 48H ==================
-def mark_op_passed_cached(user_id, op_key):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO op_passed_cache (user_id, op_key, passed_at) VALUES (?, ?, ?)",
-                (user_id, op_key, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-
-def get_cached_op_keys(user_id, hours=48):
-    threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("SELECT op_key FROM op_passed_cache WHERE user_id = ? AND passed_at >= ?",
-                (user_id, threshold))
-    rows = cur.fetchall()
-    conn.close()
-    return {r[0] for r in rows}
-
-
-def clear_expired_op_cache(hours=48):
-    threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM op_passed_cache WHERE passed_at < ?", (threshold,))
-    conn.commit()
-    conn.close()
-
-
 # ================== AD SOURCES ==================
 def add_ad_source(code, owner_id, owner_username="", price_per_click=0):
     conn = sqlite3.connect(DB)
@@ -1004,7 +830,7 @@ def get_ad_stats_period(code, start_iso=None, end_iso=None):
 
 
 # ================== WITHDRAW WAITING ==================
-def set_waiting_withdraw(user_id, gift_key, friends_base):
+def set_waiting_withdraw(user_id, gift_key, friends_base=0):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
     cur.execute(
