@@ -10,7 +10,7 @@ def main_menu():
         [KeyboardButton(text="Заработать звёзды", icon_custom_emoji_id="5438496463044752972")],
         [KeyboardButton(text="Вывести звёзды", icon_custom_emoji_id="6025976946083500432")],
         [KeyboardButton(text="Задания", icon_custom_emoji_id="5427168083074628963"),
-         KeyboardButton(text="Профиль", icon_custom_emoji_id="5325971446625758812")],
+         KeyboardButton(text="Прочее", icon_custom_emoji_id="5325971446625758812")],
     ])
 
 
@@ -105,7 +105,6 @@ def op_screen_kb(items, confirm_callback="op_check"):
 
 
 def friends_check_kb():
-    """Кнопка 'Проверить' на экране '2 друга'."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Проверить", callback_data="wd_friends_check",
                               icon_custom_emoji_id="5920433463428650761")],
@@ -210,8 +209,8 @@ def priv_kb():
 def broadcast_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
-        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
-         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="📎 Медиа", callback_data="bc_media_add"),
+         InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="bc_media_del")],
         [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
         [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
         [InlineKeyboardButton(text="👁 Предпросмотр", callback_data="bc_preview")],
@@ -230,8 +229,8 @@ def broadcast_confirm_kb():
 def broadcast_preview_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст", callback_data="bc_edit_text")],
-        [InlineKeyboardButton(text="🖼 Фото", callback_data="bc_edit_photo"),
-         InlineKeyboardButton(text="🗑 Убрать фото", callback_data="bc_del_photo")],
+        [InlineKeyboardButton(text="📎 Медиа", callback_data="bc_media_add"),
+         InlineKeyboardButton(text="🗑 Убрать медиа", callback_data="bc_media_del")],
         [InlineKeyboardButton(text="🔗 Кнопки", callback_data="bc_edit_buttons")],
         [InlineKeyboardButton(text="👥 Количество", callback_data="bc_edit_count")],
         [InlineKeyboardButton(text="✅ Отправить", callback_data="bc_send")],
@@ -284,7 +283,6 @@ def promo_op_select_kb(all_ops, selected, code):
 
 
 def promo_list_kb(rows):
-    """Список промокодов — каждая строка кликабельна."""
     buttons = []
     for code, amount, mx, used, active, p_type, amount_min in rows:
         if active and used < mx:
