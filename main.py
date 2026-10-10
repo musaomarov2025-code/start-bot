@@ -3369,7 +3369,8 @@ async def bc_send(call: CallbackQuery):
 @dp.callback_query(F.data == "bc_start")
 async def bc_start(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
-        return    b = _get_broadcast_state()
+        return
+        b = _get_broadcast_state()
     if not b.get("text") and not b.get("media_id"):
         await call.answer("Нет ни текста, ни медиа", show_alert=True)
         return
