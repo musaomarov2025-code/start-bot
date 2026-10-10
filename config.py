@@ -12,9 +12,6 @@ REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
 JOIN_REQUEST_HOURS = 24
 
-# Кэш ОП (п.2Б): сколько часов не показывать пройденный ОП
-OP_CACHE_HOURS = 48
-
 GIFTS = {
     "bear":    ("Мишка",   15),
     "heart":   ("Сердце",  15),
@@ -44,9 +41,9 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
-    "welcome_bonus": "15",
-    "withdraw_friends_required": "2",
-    "withdraw_video_id": "",
+    "welcome_bonus": "15",              # бонус за /start (новым)
+    "withdraw_friends_required": "2",   # сколько друзей нужно для вывода
+    "withdraw_video_id": "",            # file_id видео при выводе
 
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
@@ -68,7 +65,4 @@ DEFAULTS = {
     "tasks_enabled": "1",
     "task_reward": "1",
     "broadcast_batch_default": "1000",
-
-    # п.3А — удалять старое сообщение меню при переходе между разделами
-    "menu_edit_enabled": "1",
 }
