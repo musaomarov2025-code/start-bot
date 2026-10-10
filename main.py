@@ -1460,10 +1460,13 @@ async def cb_gift(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "wd_friends_check")
 async def wd_friends_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
-    await call.answer()
 
     ok = await _check_and_fulfill_waiting(user_id)
     if ok:
+        try:
+            await call.answer("✅ Готово! Заявка создана.")
+        except Exception:
+            pass
         try:
             await call.message.delete()
         except Exception:
@@ -1475,9 +1478,39 @@ async def wd_friends_check_cb(call: CallbackQuery):
         await call.answer("Заявка не найдена", show_alert=True)
         return
 
-    # РЕДАКТИРУЕМ то же сообщение (п.4А)
-    await _show_friends_screen(call, user_id, edit_message=True)
+    _, gift_key, friends_base, _ = w
+    if friends_base is None:
+        friends_base = 0
+    need = _friends_required()
+    refs_now = get_confirmed_refs_count(user_id)
+    done = refs_now - friends_base
+    if done < 0:
+        done = 0
+    if done > need:
+        done = need
 
+    left = need - done
+
+    if done >= need:
+        await call.answer("✅ Условие выполнено!")
+    else:
+        await call.answer(
+            f"👥 Прогресс: {done}/{need}\n"
+            f"Осталось пригласить: {left}",
+            show_alert=False
+        )
+
+    try:
+        await _show_friends_screen(call, user_id, edit_message=True)
+    except Exception as e:
+        if "not modified" not in str(e).lower():
+            try:
+                await call.message.answer(
+                    f"👥 Прогресс: <b>{done}/{need}</b>\n"
+                    f"Осталось пригласить: <b>{left}</b>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
 
 async def create_order(call: CallbackQuery, key):
     name, price = GIFTS[key]
