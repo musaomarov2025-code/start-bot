@@ -132,19 +132,14 @@ def admin_kb():
     ])
 
 
-def bh_kb(enabled, provider="botohub"):
+def bh_kb(enabled):
     status = "🔴 Выключить" if enabled else "🟢 Включить"
-    prov_label = "Botohub" if provider == "botohub" else "SubGram"
-    prov_switch = "Переключить на SubGram" if provider == "botohub" else "Переключить на Botohub"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Текст сообщения", callback_data="bh_edit_text"),
          InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="bh_edit_btn")],
         [InlineKeyboardButton(text="📥 ОП на входе (кол-во)", callback_data="bh_edit_entry"),
          InlineKeyboardButton(text="💸 ОП на выводе", callback_data="bh_edit_wd")],
         [InlineKeyboardButton(text="📌 Свои ОП (кол-во)", callback_data="bh_edit_custom")],
-        [InlineKeyboardButton(text=f"🔀 Провайдер: {prov_label}", callback_data="bh_switch_provider")],
-        [InlineKeyboardButton(text=f"🔄 {prov_switch}", callback_data="bh_switch_provider")],
-        [InlineKeyboardButton(text="🔑 Ключ SubGram", callback_data="bh_edit_sg_key")],
         [InlineKeyboardButton(text=status, callback_data="bh_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
