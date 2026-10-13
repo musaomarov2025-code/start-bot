@@ -19,6 +19,7 @@ from aiogram.fsm.context import FSMContext
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, GIFTS_EMOJI, REFERRAL_DAYS, DB,
     BOTOHUB_TOKEN, BOTOHUB_URL, BOTOHUB_TASKS_URL,
+    SUBGRAM_TOKEN, SUBGRAM_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -108,6 +109,7 @@ class BHEdit(StatesGroup):
     waiting_entry = State()
     waiting_wd = State()
     waiting_custom = State()
+    waiting_sg_key = State()          # ключ SubGram
 
 class TasksEdit(StatesGroup):
     waiting_reward = State()
@@ -139,13 +141,19 @@ class AdDel(StatesGroup):
 # === РАССЫЛКА ===
 class BroadcastFlow(StatesGroup):
     waiting_text = State()
-    waiting_media = State()       # фото / стикер / видео
+    waiting_media = State()           # фото / стикер / видео
     waiting_buttons = State()
     waiting_count = State()
 
 # === ВИДЕО ВЫВОДА (отдельный FSM) ===
 class WDVideo(StatesGroup):
     waiting_video = State()
+
+
+# ============ ПРОВАЙДЕР ОП ============
+def op_provider():
+    """'botohub' или 'subgram'."""
+    return get_setting("op_provider") or "botohub"
 
 
 # ============ BOTOHUB ============
@@ -185,6 +193,68 @@ async def bh_get_task(chat_id, skip=False):
     except Exception as e:
         print("Botohub tasks error:", e)
         return None
+
+
+# ============ SUBGRAM ============
+async def subgram_get_sponsors(user_id, chat_id=None, max_sponsors=3,
+                               is_premium=None, first_name=None,
+                               username=None, language_code=None):
+    """
+    Возвращает dict:
+      {"status": "ok"|"warning"|"error", "sponsors": [...], "message": "..."}
+    sponsors — только available_now=true и status!=subscribed.
+    """
+    key = get_setting("subgram_key") or SUBGRAM_TOKEN
+    if not key:
+        return {"status": "error", "sponsors": [], "message": "no subgram key"}
+
+    if chat_id is None:
+        chat_id = user_id
+
+    payload = {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "action": get_setting("subgram_action") or "subscribe",
+        "max_sponsors": max(1, min(10, max_sponsors)),
+        "get_links": 1 if str(get_setting("subgram_get_links") or "1") == "1" else 0,
+    }
+    if is_premium is not None:
+        payload["is_premium"] = 1 if is_premium else 0
+    if first_name:
+        payload["first_name"] = first_name
+    if username:
+        payload["username"] = username
+    if language_code:
+        payload["language_code"] = language_code
+
+    headers = {"Auth": key, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(SUBGRAM_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                data = await r.json(content_type=None)
+    except Exception as e:
+        print("SubGram error:", e)
+        return {"status": "error", "sponsors": [], "message": str(e)}
+
+    status = (data.get("status") or "").lower()
+    if status == "ok":
+        return {"status": "ok", "sponsors": [], "message": data.get("message", "")}
+
+    if status == "warning":
+        raw = (data.get("additional") or {}).get("sponsors", [])
+        sponsors = []
+        for sp in raw:
+            if not sp.get("available_now"):
+                continue
+            if sp.get("status") == "subscribed":
+                continue
+            sponsors.append(sp)
+        return {"status": "warning", "sponsors": sponsors,
+                "message": data.get("message", "")}
+
+    return {"status": "error", "sponsors": [],
+            "message": data.get("message", "unknown error")}
 
 
 async def check_custom_task(user_id, check_type, check_target):
@@ -241,15 +311,44 @@ async def _get_botohub_pending(user_id):
     return [t for t in tasks if not t.get("completed") and t.get("url")]
 
 
-async def collect_op_items(user_id):
+async def collect_op_items(user_id, first_name=None, username=None,
+                           language_code=None, is_premium=None):
+    """
+    Возвращает список (op_key, title, url, passed).
+    Провайдер — по op_provider(). Свои ОП добавляются всегда.
+    """
+    provider = op_provider()
     passed_set = set(get_user_passed_ops(user_id))
     items = []
-    for t in await _get_botohub_pending(user_id):
-        url = t.get("url")
-        op_key = f"bh:{url}"
-        if op_key in passed_set:
-            continue
-        items.append((op_key, "Подписаться", url, False))
+
+    if provider == "subgram":
+        try:
+            limit = int(get_setting("botohub_entry_count") or 2)
+        except Exception:
+            limit = 2
+        res = await subgram_get_sponsors(
+            user_id, chat_id=user_id, max_sponsors=limit,
+            is_premium=is_premium, first_name=first_name,
+            username=username, language_code=language_code)
+        if res.get("status") == "warning":
+            for sp in res.get("sponsors", []):
+                rid = sp.get("resource_id") or ""
+                url = sp.get("link") or ""
+                if not rid or not url:
+                    continue
+                op_key = f"sg:{rid}"
+                if op_key in passed_set:
+                    continue
+                items.append((op_key, "Подписаться", url, False))
+    else:
+        for t in await _get_botohub_pending(user_id):
+            url = t.get("url")
+            op_key = f"bh:{url}"
+            if op_key in passed_set:
+                continue
+            items.append((op_key, "Подписаться", url, False))
+
+    # свои ОП — всегда
     try:
         custom_limit = int(get_setting("op_custom_entry_count") or 0)
     except Exception:
@@ -262,26 +361,41 @@ async def collect_op_items(user_id):
         if op_key in passed_set:
             continue
         items.append((op_key, title, link, False))
+
     return items
 
 
-async def _mark_botohub_completed(user_id):
-    if not (bh_enabled() and BOTOHUB_TOKEN):
+async def _mark_ops_completed(user_id, first_name=None, username=None,
+                              language_code=None, is_premium=None):
+    """
+    Botohub: помечает completed=true.
+    SubGram: ничего не помечаем — при след. запросе status=ok сам скажет.
+    """
+    provider = op_provider()
+
+    if provider == "botohub":
+        if not (bh_enabled() and BOTOHUB_TOKEN):
+            return
+        try:
+            count = int(get_setting("botohub_entry_count") or 2)
+        except Exception:
+            count = 2
+        data = await bh_get_tasks(user_id, count)
+        for t in data.get("tasks", []):
+            if t.get("completed") and t.get("url"):
+                mark_op_passed(user_id, f"bh:{t['url']}")
         return
-    try:
-        count = int(get_setting("botohub_entry_count") or 2)
-    except Exception:
-        count = 2
-    data = await bh_get_tasks(user_id, count)
-    tasks = data.get("tasks", [])
-    for t in tasks:
-        if t.get("completed") and t.get("url"):
-            mark_op_passed(user_id, f"bh:{t['url']}")
+
+    return
 
 
 async def send_op_screen(chat_id, user_id, header_text=None,
-                         confirm_callback="op_check", pending_promo=None):
-    items = await collect_op_items(user_id)
+                         confirm_callback="op_check", pending_promo=None,
+                         first_name=None, username=None,
+                         language_code=None, is_premium=None):
+    items = await collect_op_items(
+        user_id, first_name=first_name, username=username,
+        language_code=language_code, is_premium=is_premium)
     if not items:
         return True
     text = header_text if header_text else get_setting("botohub_text")
@@ -292,12 +406,15 @@ async def send_op_screen(chat_id, user_id, header_text=None,
 
 async def _guard_ops(message_or_call):
     if isinstance(message_or_call, Message):
-        user_id = message_or_call.from_user.id
+        u = message_or_call.from_user
         chat_id = message_or_call.chat.id
     else:
-        user_id = message_or_call.from_user.id
-        chat_id = message_or_call.from_user.id
-    items = await collect_op_items(user_id)
+        u = message_or_call.from_user
+        chat_id = u.id
+    items = await collect_op_items(
+        u.id, first_name=u.first_name, username=u.username,
+        language_code=getattr(u, "language_code", None),
+        is_premium=getattr(u, "is_premium", None))
     if not items:
         return True
     await bot.send_message(chat_id, get_setting("botohub_text"),
@@ -348,7 +465,6 @@ def _friends_required():
 
 
 async def _show_friends_screen(target, user_id, edit_message=False):
-    """Показывает экран 'пригласи N друзей'. target: int chat_id или CallbackQuery."""
     w = get_waiting_withdraw(user_id)
     if not w:
         return
@@ -385,7 +501,6 @@ async def _show_friends_screen(target, user_id, edit_message=False):
 
 
 async def _check_and_fulfill_waiting(user_id):
-    """Если у юзера уже N друзей — создаёт заявку. Возвращает True если создана."""
     w = get_waiting_withdraw(user_id)
     if not w:
         return False
@@ -549,18 +664,19 @@ async def start(message: Message, state: FSMContext):
     elif kind == "promo":
         promo_code = value.upper()
 
-    is_new = add_user(message.from_user.id, message.from_user.username, referrer)
+    u = message.from_user
+    is_new = add_user(u.id, u.username, referrer)
     if not is_new:
-        update_username(message.from_user.id, message.from_user.username)
+        update_username(u.id, u.username)
 
-    if not is_welcome_bonus_paid(message.from_user.id):
+    if not is_welcome_bonus_paid(u.id):
         try:
             bonus = int(get_setting("welcome_bonus") or 15)
         except Exception:
             bonus = 15
         if bonus > 0:
-            add_balance(message.from_user.id, bonus)
-            mark_welcome_bonus_paid(message.from_user.id)
+            add_balance(u.id, bonus)
+            mark_welcome_bonus_paid(u.id)
             try:
                 await message.answer(
                     f'<tg-emoji emoji-id="5895708410447401643">⭐️</tg-emoji> '
@@ -569,8 +685,8 @@ async def start(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-    if is_new and referrer and referrer != message.from_user.id:
-        create_pending_referral(message.from_user.id, referrer)
+    if is_new and referrer and referrer != u.id:
+        create_pending_referral(u.id, referrer)
         try:
             await bot.send_message(referrer,
                 '<tg-emoji emoji-id="5193018401810822951">🎉</tg-emoji> '
@@ -584,8 +700,8 @@ async def start(message: Message, state: FSMContext):
         src = get_ad_source(ad_code)
         if src:
             increment_ad_click(ad_code, is_new_user=is_new)
-            is_premium = 1 if getattr(message.from_user, "is_premium", False) else 0
-            mark_ad_user(message.from_user.id, ad_code,
+            is_premium = 1 if getattr(u, "is_premium", False) else 0
+            mark_ad_user(u.id, ad_code,
                          registered=1 if is_new else 0,
                          is_premium=is_premium)
 
@@ -604,46 +720,60 @@ async def start(message: Message, state: FSMContext):
         if promo:
             c, amount, max_uses, used, active, p_type, amount_min = promo
             if p_type == "op":
-                PENDING_PROMO[message.from_user.id] = promo_code
+                PENDING_PROMO[u.id] = promo_code
                 header = (
                     f'<tg-emoji emoji-id="5449800250032143374">💬</tg-emoji> '
                     f'Чек даёт вам до <b>{amount}</b> '
                     f'<tg-emoji emoji-id="5895708410447401643">⭐️</tg-emoji>\n\n'
                     f'<blockquote>Для его активации подпишитесь на спонсоров</blockquote>'
                 )
-                passed = await send_op_screen(message.chat.id, message.from_user.id,
-                                              header_text=header, pending_promo=promo_code)
+                passed = await send_op_screen(
+                    message.chat.id, u.id, header_text=header,
+                    pending_promo=promo_code,
+                    first_name=u.first_name, username=u.username,
+                    language_code=getattr(u, "language_code", None),
+                    is_premium=getattr(u, "is_premium", None))
                 if not passed:
                     return
-                got = activate_promo_after_op(promo_code, message.from_user.id)
+                got = activate_promo_after_op(promo_code, u.id)
                 if got:
                     await message.answer(f"✅ Промокод активирован! +{got} ⭐")
-                    PENDING_PROMO.pop(message.from_user.id, None)
-                await _go_to_main(message.chat.id, message.from_user.id)
+                    PENDING_PROMO.pop(u.id, None)
+                await _go_to_main(message.chat.id, u.id)
                 return
-            ok, msg_, amt, _, _ = activate_promo(promo_code, message.from_user.id)
+            ok, msg_, amt, _, _ = activate_promo(promo_code, u.id)
             if ok and msg_ != "NEED_OP":
                 await message.answer(f"✅ Промокод активирован! +{amt} ⭐")
-            await _go_to_main(message.chat.id, message.from_user.id)
+            await _go_to_main(message.chat.id, u.id)
             return
 
-    passed = await send_op_screen(message.chat.id, message.from_user.id)
+    passed = await send_op_screen(
+        message.chat.id, u.id,
+        first_name=u.first_name, username=u.username,
+        language_code=getattr(u, "language_code", None),
+        is_premium=getattr(u, "is_premium", None))
     if not passed:
         return
 
-    await _go_to_main(message.chat.id, message.from_user.id)
+    await _go_to_main(message.chat.id, u.id)
 
 
 @dp.callback_query(F.data == "op_check")
 async def op_check_cb(call: CallbackQuery, state: FSMContext):
-    user_id = call.from_user.id
+    u = call.from_user
 
     try:
-        await _mark_botohub_completed(user_id)
-    except Exception:
-        pass
+        await _mark_ops_completed(
+            u.id, first_name=u.first_name, username=u.username,
+            language_code=getattr(u, "language_code", None),
+            is_premium=getattr(u, "is_premium", None))
+    except Exception as e:
+        print("_mark_ops_completed error:", e)
 
-    items = await collect_op_items(user_id)
+    items = await collect_op_items(
+        u.id, first_name=u.first_name, username=u.username,
+        language_code=getattr(u, "language_code", None),
+        is_premium=getattr(u, "is_premium", None))
 
     if not items:
         await call.answer()
@@ -652,20 +782,19 @@ async def op_check_cb(call: CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
-        mark_ad_user_op(user_id)
+        mark_ad_user_op(u.id)
 
-        pending = PENDING_PROMO.pop(user_id, None)
+        pending = PENDING_PROMO.pop(u.id, None)
         if pending:
-            got = activate_promo_after_op(pending, user_id)
+            got = activate_promo_after_op(pending, u.id)
             if got:
-                await bot.send_message(user_id, f"✅ Промокод активирован! +{got} ⭐")
-            await _go_to_main(user_id, user_id)
+                await bot.send_message(u.id, f"✅ Промокод активирован! +{got} ⭐")
+            await _go_to_main(u.id, u.id)
             return
 
-        await _go_to_main(user_id, user_id)
+        await _go_to_main(u.id, u.id)
         return
 
-    # Не все пройдены → alert + edit_text с новым списком
     await call.answer(
         "Подписался не на всё — галочки покажут, что осталось",
         show_alert=True)
@@ -845,10 +974,14 @@ async def user_promo_check(message: Message, state: FSMContext):
             f'<tg-emoji emoji-id="5895708410447401643">⭐️</tg-emoji>\n\n'
             f'<blockquote>Для его активации подпишитесь на спонсоров</blockquote>'
         )
-        items = await collect_op_items(message.from_user.id)
+        u = message.from_user
+        items = await collect_op_items(
+            u.id, first_name=u.first_name, username=u.username,
+            language_code=getattr(u, "language_code", None),
+            is_premium=getattr(u, "is_premium", None))
         if not items:
-            got = activate_promo_after_op(code, message.from_user.id)
-            PENDING_PROMO.pop(message.from_user.id, None)
+            got = activate_promo_after_op(code, u.id)
+            PENDING_PROMO.pop(u.id, None)
             if got:
                 await message.answer(f"✅ Промокод активирован! +{got} ⭐")
             return
@@ -1236,7 +1369,8 @@ async def withdraw(message: Message, state: FSMContext):
     if not await _guard_ops(message):
         return
     await state.clear()
-    user_id = message.from_user.id
+    u = message.from_user
+    user_id = u.id
     chat_id = message.chat.id
 
     w = get_waiting_withdraw(user_id)
@@ -1245,18 +1379,39 @@ async def withdraw(message: Message, state: FSMContext):
         return
 
     extra_items = []
-    if bh_enabled() and BOTOHUB_TOKEN:
+    provider = op_provider()
+
+    if provider == "subgram":
         try:
             wd_count = int(get_setting("botohub_withdraw_count"))
         except Exception:
             wd_count = 6
-        data = await bh_get_tasks(user_id, wd_count)
-        tasks = data.get("tasks", [])
-        not_done = [t for t in tasks if not t.get("completed")]
-        for t in not_done:
-            link = t.get("url")
-            if link:
-                extra_items.append((f"bh_wd:{link}", "Подписаться", link, False))
+        res = await subgram_get_sponsors(
+            user_id, chat_id=user_id, max_sponsors=wd_count,
+            is_premium=getattr(u, "is_premium", None),
+            first_name=u.first_name, username=u.username,
+            language_code=getattr(u, "language_code", None))
+        if res.get("status") == "warning":
+            for sp in res.get("sponsors", []):
+                rid = sp.get("resource_id") or ""
+                link = sp.get("link") or ""
+                if not rid or not link:
+                    continue
+                extra_items.append((f"sg_wd:{rid}", "Подписаться", link, False))
+    else:
+        if bh_enabled() and BOTOHUB_TOKEN:
+            try:
+                wd_count = int(get_setting("botohub_withdraw_count"))
+            except Exception:
+                wd_count = 6
+            data = await bh_get_tasks(user_id, wd_count)
+            tasks = data.get("tasks", [])
+            not_done = [t for t in tasks if not t.get("completed")]
+            for t in not_done:
+                link = t.get("url")
+                if link:
+                    extra_items.append((f"bh_wd:{link}", "Подписаться", link, False))
+
     customs_wd = list_custom_ops("withdraw")
     for cid, title, link in customs_wd:
         extra_items.append((f"custom_wd:{cid}", title, link, False))
@@ -1274,18 +1429,34 @@ async def withdraw(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "op_check_wd")
 async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
-    user_id = call.from_user.id
+    u = call.from_user
+    user_id = u.id
     await asyncio.sleep(2)
 
     still_not_done = []
-    if bh_enabled() and BOTOHUB_TOKEN:
+    provider = op_provider()
+
+    if provider == "subgram":
         try:
             wd_count = int(get_setting("botohub_withdraw_count"))
         except Exception:
             wd_count = 6
-        data = await bh_get_tasks(user_id, wd_count)
-        tasks = data.get("tasks", [])
-        still_not_done = [t for t in tasks if not t.get("completed") and t.get("url")]
+        res = await subgram_get_sponsors(
+            user_id, chat_id=user_id, max_sponsors=wd_count,
+            is_premium=getattr(u, "is_premium", None),
+            first_name=u.first_name, username=u.username,
+            language_code=getattr(u, "language_code", None))
+        if res.get("status") == "warning":
+            still_not_done = res.get("sponsors", [])
+    else:
+        if bh_enabled() and BOTOHUB_TOKEN:
+            try:
+                wd_count = int(get_setting("botohub_withdraw_count"))
+            except Exception:
+                wd_count = 6
+            data = await bh_get_tasks(user_id, wd_count)
+            tasks = data.get("tasks", [])
+            still_not_done = [t for t in tasks if not t.get("completed") and t.get("url")]
 
     if still_not_done:
         await call.answer("Ты ещё не подписался на все каналы", show_alert=True)
@@ -1418,16 +1589,28 @@ async def admin_back(call: CallbackQuery, state: FSMContext):
         await call.message.answer("🛠 Админ-панель", reply_markup=admin_kb())
 
 
-# ---------- BOTOHUB ОП ----------
+# ---------- BOTOHUB ОП / ПРОВАЙДЕР ----------
 def bh_menu_text():
     enabled = bh_enabled()
+    prov = op_provider()
+    prov_label = "Botohub" if prov == "botohub" else "SubGram"
+
+    key_sg = get_setting("subgram_key") or SUBGRAM_TOKEN
+    sg_key_preview = (key_sg[:12] + "...") if key_sg else "—"
+
     return (
-        f"🎯 <b>Botohub ОП</b>\n\n"
+        f"🎯 <b>ОП (обязательная подписка)</b>\n\n"
         f"Статус: {'🟢 включен' if enabled else '🔴 выключен'}\n"
-        f"🔑 Токен: <code>{BOTOHUB_TOKEN[:20]}...</code>\n\n"
-        f"📥 ОП на входе (Botohub): <b>{get_setting('botohub_entry_count')}</b>\n"
+        f"🔀 Провайдер: <b>{prov_label}</b>\n\n"
+        f"<b>Botohub</b>\n"
+        f"🔑 Токен: <code>{BOTOHUB_TOKEN[:20]}...</code>\n"
+        f"📥 ОП на входе: <b>{get_setting('botohub_entry_count')}</b>\n"
+        f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n\n"
+        f"<b>SubGram</b>\n"
+        f"🔑 Ключ: <code>{sg_key_preview}</code>\n"
+        f"📥 ОП на входе: <b>{get_setting('botohub_entry_count')}</b>\n"
+        f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n\n"
         f"📌 Свои ОП на входе: <b>{get_setting('op_custom_entry_count')}</b> (0 = все)\n"
-        f"💸 ОП на выводе: <b>{get_setting('botohub_withdraw_count')}</b>\n"
         f"🔤 Текст кнопок: <code>{get_setting('botohub_btn_text')}</code>\n\n"
         f"📝 Текст:\n{get_setting('botohub_text')[:80]}..."
     )
@@ -1437,7 +1620,56 @@ def bh_menu_text():
 async def bh_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.edit_text(bh_menu_text(), reply_markup=bh_kb(bh_enabled()), parse_mode="HTML")
+    await call.message.edit_text(
+        bh_menu_text(),
+        reply_markup=bh_kb(bh_enabled(), op_provider()),
+        parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "bh_switch_provider")
+async def bh_switch_provider(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return
+    cur = op_provider()
+    new = "subgram" if cur == "botohub" else "botohub"
+    set_setting("op_provider", new)
+    new_label = "Botohub" if new == "botohub" else "SubGram"
+    await call.answer(f"🔀 Провайдер: {new_label}")
+    try:
+        await call.message.edit_text(
+            bh_menu_text(),
+            reply_markup=bh_kb(bh_enabled(), new),
+            parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "bh_edit_sg_key")
+async def bh_edit_sg_key(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return
+    cur = get_setting("subgram_key") or SUBGRAM_TOKEN
+    preview = (cur[:12] + "...") if cur else "—"
+    await call.message.answer(
+        f"🔑 Текущий ключ SubGram: <code>{preview}</code>\n\n"
+        f"Пришли новый ключ (одним сообщением).",
+        parse_mode="HTML")
+    await state.set_state(BHEdit.waiting_sg_key)
+
+
+@dp.message(BHEdit.waiting_sg_key)
+async def bh_save_sg_key(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    key = (message.text or "").strip()
+    if len(key) < 20:
+        await message.answer("⚠️ Слишком короткий ключ. Пришли ещё раз или отмени /admin.")
+        return
+    set_setting("subgram_key", key)
+    await state.clear()
+    await message.answer(
+        f"✅ Ключ SubGram сохранён: <code>{key[:12]}...</code>",
+        reply_markup=back_admin_kb(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "bh_toggle")
@@ -1447,7 +1679,10 @@ async def bh_toggle(call: CallbackQuery):
     current = get_setting("botohub_enabled") == "1"
     set_setting("botohub_enabled", "0" if current else "1")
     await call.answer("✅ Изменено")
-    await call.message.edit_text(bh_menu_text(), reply_markup=bh_kb(not current), parse_mode="HTML")
+    await call.message.edit_text(
+        bh_menu_text(),
+        reply_markup=bh_kb(not current, op_provider()),
+        parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "bh_edit_text")
@@ -1488,7 +1723,7 @@ async def bh_save_btn(message: Message, state: FSMContext):
 async def bh_edit_entry(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.answer("📥 Сколько ОП брать от Botohub на входе?")
+    await call.message.answer("📥 Сколько ОП брать на входе?")
     await state.set_state(BHEdit.waiting_entry)
 
 
@@ -2134,7 +2369,7 @@ async def user_refs(call: CallbackQuery):
     if len(text) > 4000:
         text = text[:4000] + "\n...обрезано"
     await call.message.answer(text, parse_mode="HTML")
-    # ---------- ВИДЕО ВЫВОДА (отдельный FSM WDVideo) ----------
+    # ---------- ВИДЕО ВЫВОДА (FSM WDVideo) ----------
 @dp.callback_query(F.data == "wd_video_menu")
 async def wd_video_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -2277,7 +2512,9 @@ async def set_value_save(message: Message, state: FSMContext):
     set_setting(key, value)
     await state.clear()
     await message.answer(f"✅ Сохранено: {key}", reply_markup=back_admin_kb())
-    # ---------- ПРОМОКОДЫ ----------
+
+
+# ---------- ПРОМОКОДЫ ----------
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -2411,21 +2648,45 @@ async def promo_uses_step(message: Message, state: FSMContext):
 
 
 async def _collect_all_op_keys():
+    """
+    Список (op_key, label) для промокода за ОП.
+    Зависит от провайдера + свои ОП (entry).
+    """
     items = []
-    if bh_enabled() and BOTOHUB_TOKEN:
+    provider = op_provider()
+
+    if provider == "subgram":
         try:
             count = int(get_setting("botohub_entry_count") or 2)
         except Exception:
             count = 2
-        data = await bh_get_tasks(ADMIN_ID, count)
-        for t in data.get("tasks", []):
-            url = t.get("url")
-            if url:
-                op_key = f"bh:{url}"
-                items.append((op_key, f"Botohub: {url[:40]}"))
+        res = await subgram_get_sponsors(ADMIN_ID, chat_id=ADMIN_ID,
+                                         max_sponsors=count)
+        if res.get("status") == "warning":
+            for sp in res.get("sponsors", []):
+                rid = sp.get("resource_id") or ""
+                if not rid:
+                    continue
+                name = sp.get("resource_name") or sp.get("button_text") or rid
+                op_key = f"sg:{rid}"
+                items.append((op_key, f"SubGram: {name[:40]}"))
+    else:
+        if bh_enabled() and BOTOHUB_TOKEN:
+            try:
+                count = int(get_setting("botohub_entry_count") or 2)
+            except Exception:
+                count = 2
+            data = await bh_get_tasks(ADMIN_ID, count)
+            for t in data.get("tasks", []):
+                url = t.get("url")
+                if url:
+                    op_key = f"bh:{url}"
+                    items.append((op_key, f"Botohub: {url[:40]}"))
+
     for cid, title, link in list_custom_ops("entry"):
         op_key = f"custom:{cid}"
         items.append((op_key, f"Свой: {title}"))
+
     return items
 
 
@@ -2589,9 +2850,7 @@ async def promo_delete_step(message: Message, state: FSMContext):
     delete_promo(code)
     await state.clear()
     await message.answer(f"🗑 Удалён <code>{code}</code>", parse_mode="HTML")
-
-
-# ---------- РЕКЛАМА ----------
+    # ---------- РЕКЛАМА ----------
 @dp.callback_query(F.data == "ad_menu")
 async def ad_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -2946,7 +3205,7 @@ def _build_bc_kb():
 
 
 async def _send_broadcast_to(uid, b, kb):
-    """Отправляет одно сообщение рассылки юзеру uid. Возвращает True/False."""
+    """Отправляет одно сообщение рассылки юзеру uid."""
     mtype = b.get("media_type")
     mid = b.get("media_id")
     text = b.get("text")
@@ -2962,12 +3221,10 @@ async def _send_broadcast_to(uid, b, kb):
         return True
 
     if mtype == "sticker" and mid:
-        # Стикер + inline-кнопки, БЕЗ текста
         await bot.send_sticker(uid, mid, reply_markup=kb)
         return True
 
     if not text:
-        # нечего отправлять
         raise ValueError("no text and no media")
 
     await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
@@ -3035,7 +3292,6 @@ async def bc_start(call: CallbackQuery):
             es = str(e).lower()
             if "parse entities" in es or "unclosed" in es or "can't parse" in es:
                 try:
-                    # фолбэк без parse_mode
                     mtype = b.get("media_type")
                     mid = b.get("media_id")
                     text = b.get("text")
@@ -3175,7 +3431,6 @@ async def referral_watcher():
 
 # ================== ФОН: N ДРУЗЕЙ ==================
 async def withdraw_watcher():
-    """Каждую минуту проверяет, набрали ли юзеры нужное число друзей."""
     while True:
         try:
             import sqlite3
