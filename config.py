@@ -8,6 +8,9 @@ BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
 BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
 BOTOHUB_TASKS_URL = "https://botohub.me/get-tasks"
 
+SUBGRAM_TOKEN = "af0889b23a5f5f984a818a51559df1e40ad17ae419a57ab6873caffa7ff25fea"
+SUBGRAM_URL = "https://api.subgram.org/get-sponsors"
+
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
 JOIN_REQUEST_HOURS = 24
@@ -41,9 +44,9 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
-    "welcome_bonus": "15",              # бонус за /start (новым)
-    "withdraw_friends_required": "2",   # сколько друзей нужно для вывода
-    "withdraw_video_id": "",            # file_id видео при выводе
+    "welcome_bonus": "15",
+    "withdraw_friends_required": "2",
+    "withdraw_video_id": "",
 
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
@@ -51,6 +54,8 @@ DEFAULTS = {
         "👦 Я парень - https://t.me/RuletkaMatchBot?start=savikpriv2509\n"
         "👧 Я девушка - https://t.me/RuletkaMatchBot?start=savikpriv2509"
     ),
+
+    "op_provider": "botohub",           # "botohub" или "subgram"
 
     "botohub_enabled": "1",
     "botohub_entry_count": "2",
@@ -62,6 +67,11 @@ DEFAULTS = {
     ),
     "botohub_btn_text": "Подписаться",
     "op_custom_entry_count": "0",
+
+    "subgram_key": SUBGRAM_TOKEN,        # можно менять из админки
+    "subgram_action": "subscribe",       # subscribe / newtask / task
+    "subgram_get_links": "1",
+
     "tasks_enabled": "1",
     "task_reward": "1",
     "broadcast_batch_default": "1000",
