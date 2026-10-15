@@ -1007,7 +1007,11 @@ async def tgrass_check(call: CallbackQuery):
     status = data.get("status")
 
     if status != "ok":
-        await call.answer("Подпишись и попробуй ещё раз", show_alert=True)
+        try:
+            await call.answer(f"Статус: {status}", show_alert=True)
+        except Exception:
+            pass
+        print("TGRASS CHECK:", data)
         return
 
     reward = int(get_setting("task_reward") or 5)
