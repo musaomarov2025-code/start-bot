@@ -50,13 +50,10 @@ def gifts_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def task_kb(link, source="bh"):
+def task_kb(offer_id):
+    """Клавиатура задания Tgrass. offer_id — id оффера для callback."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Перейти", url=link,
-                              icon_custom_emoji_id="5368733682917980020"),
-         InlineKeyboardButton(text="Пропустить", callback_data="task_skip",
-                              icon_custom_emoji_id="5260450573768990626")],
-        [InlineKeyboardButton(text="Подтвердить", callback_data=f"tc:{source}",
+        [InlineKeyboardButton(text="Проверить ✅", callback_data="tgrass_check",
                               icon_custom_emoji_id="6026257381678124710")],
     ])
 
@@ -113,14 +110,11 @@ def friends_check_kb():
 
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎯 Botohub ОП", callback_data="bh_menu"),
+        [InlineKeyboardButton(text="🎯 Спонсоры", callback_data="bh_menu"),
          InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
-        [InlineKeyboardButton(text="📜 История", callback_data="wd_history"),
-         InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu")],
-        [InlineKeyboardButton(text="🎯 Задания Botohub", callback_data="tasks_menu"),
-         InlineKeyboardButton(text="📌 Свои задания", callback_data="ctasks_menu")],
-        [InlineKeyboardButton(text="📌 Свои ОП", callback_data="cop_menu"),
+        [InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="🎯 Задания Tgrass", callback_data="tasks_menu")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast_menu"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
         [InlineKeyboardButton(text="📊 Реклама", callback_data="ad_menu"),
@@ -139,7 +133,6 @@ def bh_kb(enabled):
          InlineKeyboardButton(text="🔤 Текст кнопок", callback_data="bh_edit_btn")],
         [InlineKeyboardButton(text="📥 ОП на входе (кол-во)", callback_data="bh_edit_entry"),
          InlineKeyboardButton(text="💸 ОП на выводе", callback_data="bh_edit_wd")],
-        [InlineKeyboardButton(text="📌 Свои ОП (кол-во)", callback_data="bh_edit_custom")],
         [InlineKeyboardButton(text=status, callback_data="bh_toggle")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
@@ -154,46 +147,35 @@ def tasks_kb(enabled):
     ])
 
 
-def ctasks_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить", callback_data="ctask_add")],
-        [InlineKeyboardButton(text="📜 Список", callback_data="ctask_list")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data="ctask_delete")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
-def ctask_type_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Открытый канал", callback_data="ctask_type:open")],
-        [InlineKeyboardButton(text="🔒 Закрытый канал", callback_data="ctask_type:closed")],
-        [InlineKeyboardButton(text="🤖 Бот по рефке", callback_data="ctask_type:bot")],
-        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_back")],
-    ])
-
-
-def cop_kb(op_type):
-    title = "входе" if op_type == "entry" else "выводе"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"➕ Добавить (на {title})", callback_data=f"cop_add:{op_type}")],
-        [InlineKeyboardButton(text=f"📜 Список (на {title})", callback_data=f"cop_list:{op_type}")],
-        [InlineKeyboardButton(text=f"🗑 Удалить", callback_data=f"cop_del:{op_type}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
-def cop_type_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 На входе", callback_data="cop_menu:entry")],
-        [InlineKeyboardButton(text="💸 На выводе", callback_data="cop_menu:withdraw")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
-    ])
-
-
 def admin_wd_kb(wid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
          InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}")]
+    ])
+
+
+def wd_page_kb(wid, idx, total):
+    """Клавиатура для одной заявки с листалкой."""
+    nav_row = []
+    if idx > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"wd_page:{idx-1}"))
+    nav_row.append(InlineKeyboardButton(text=f"{idx+1}/{total}", callback_data="wd_noop"))
+    if idx < total - 1:
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"wd_page:{idx+1}"))
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        nav_row,
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"wd_ok:{wid}"),
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"wd_no:{wid}")],
+        [InlineKeyboardButton(text="✅✅ Принять все", callback_data="wd_accept_all"),
+         InlineKeyboardButton(text="❌❌ Отклонить все", callback_data="wd_reject_all")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
+    ])
+
+
+def wd_empty_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")],
     ])
 
 
@@ -259,29 +241,6 @@ def promos_kb():
     ])
 
 
-def promo_type_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💫 Обычный", callback_data="pcreate_type:normal")],
-        [InlineKeyboardButton(text="📢 За ОП", callback_data="pcreate_type:op")],
-        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_back")],
-    ])
-
-
-def promo_op_select_kb(all_ops, selected, code):
-    buttons = []
-    for op_key, label in all_ops:
-        mark = "✅ " if op_key in selected else "⬜ "
-        buttons.append([InlineKeyboardButton(
-            text=f"{mark}{label}",
-            callback_data=f"pcreate_toggle:{code}:{op_key}"
-        )])
-    buttons.append([InlineKeyboardButton(
-        text="✅ Готово", callback_data=f"pcreate_done:{code}")])
-    buttons.append([InlineKeyboardButton(
-        text="⬅️ Отмена", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
 def promo_list_kb(rows):
     buttons = []
     for code, amount, mx, used, active, p_type, amount_min in rows:
@@ -289,11 +248,10 @@ def promo_list_kb(rows):
             icon = "🟢"
         else:
             icon = "🔴"
-        tp = "📢" if p_type == "op" else "💫"
-        if p_type == "op":
-            label = f"{icon} {tp} {code} — {amount_min}-{amount}⭐ | {used}/{mx}"
+        if amount_min and amount_min < amount:
+            label = f"{icon} {code} — {amount_min}-{amount}⭐ | {used}/{mx}"
         else:
-            label = f"{icon} {tp} {code} — {amount}⭐ | {used}/{mx}"
+            label = f"{icon} {code} — {amount}⭐ | {used}/{mx}"
         buttons.append([InlineKeyboardButton(
             text=label, callback_data=f"promo_view:{code}")])
     buttons.append([InlineKeyboardButton(
