@@ -56,6 +56,17 @@ def init_db():
         PRIMARY KEY (code, op_key)
     )""")
 
+    # === TGRASS: выполненные задания ===
+    cur.execute("""CREATE TABLE IF NOT EXISTS task_completed (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        offer_id INTEGER,
+        reward INTEGER,
+        done_at TEXT
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_task_completed_user ON task_completed(user_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_task_completed_date ON task_completed(done_at)")
+
     cur.execute("PRAGMA table_info(promos)")
     cols = {r[1] for r in cur.fetchall()}
     if "p_type" not in cols:
@@ -91,12 +102,10 @@ def init_db():
         created_at TEXT
     )""")
 
-    # --- миграция: welcome_bonus_paid ---
     cur.execute("PRAGMA table_info(users)")
     cols = {r[1] for r in cur.fetchall()}
     if "welcome_bonus_paid" not in cols:
         cur.execute("ALTER TABLE users ADD COLUMN welcome_bonus_paid INTEGER DEFAULT 0")
-        # старым юзерам ставим 1 — они бонус уже не получат
         cur.execute("UPDATE users SET welcome_bonus_paid = 1")
 
     conn.commit()
@@ -341,6 +350,51 @@ def get_pending_withdrawals():
     return rows
 
 
+def get_pending_withdrawals_all():
+    return get_pending_withdrawals()
+
+
+def get_pending_withdrawal_by_id(wid):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, amount, gift FROM withdrawals WHERE id = ? AND status = 'pending'", (wid,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def count_pending_withdrawals():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'")
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def accept_all_pending():
+    rows = get_pending_withdrawals_all()
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    for wid, _, _, _ in rows:
+        cur.execute("UPDATE withdrawals SET status = 'completed' WHERE id = ?", (wid,))
+    conn.commit()
+    conn.close()
+    return rows
+
+
+def reject_all_pending():
+    rows = get_pending_withdrawals_all()
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    for wid, user_id, amount, _ in rows:
+        cur.execute("UPDATE withdrawals SET status = 'rejected' WHERE id = ?", (wid,))
+        cur.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+    return rows
+
+
 def get_withdrawal_history(limit=50):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -400,6 +454,73 @@ def get_top_refs(limit=10):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# ================== TASKS (TGRASS STATS) ==================
+def mark_task_completed(user_id, offer_id, reward):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO task_completed (user_id, offer_id, reward, done_at) VALUES (?, ?, ?, ?)",
+        (user_id, offer_id, reward, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def was_task_completed(user_id, offer_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM task_completed WHERE user_id = ? AND offer_id = ?",
+                (user_id, offer_id))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
+def get_task_stats(period=None):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    where = ""
+    params = []
+    if period == "today":
+        today = datetime.now().strftime("%Y-%m-%d")
+        where = "WHERE done_at LIKE ?"
+        params = [today + "%"]
+    elif period == "week":
+        threshold = (datetime.now() - timedelta(days=7)).isoformat()
+        where = "WHERE done_at >= ?"
+        params = [threshold]
+    elif period == "month":
+        threshold = (datetime.now() - timedelta(days=30)).isoformat()
+        where = "WHERE done_at >= ?"
+        params = [threshold]
+    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT user_id), COALESCE(SUM(reward),0) FROM task_completed {where}", params)
+    row = cur.fetchone()
+    conn.close()
+    return {"count": row[0] or 0, "unique_users": row[1] or 0, "stars": row[2] or 0}
+
+
+def get_op_stats(period=None):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    where = ""
+    params = []
+    if period == "today":
+        today = datetime.now().strftime("%Y-%m-%d")
+        where = "WHERE passed_at LIKE ?"
+        params = [today + "%"]
+    elif period == "week":
+        threshold = (datetime.now() - timedelta(days=7)).isoformat()
+        where = "WHERE passed_at >= ?"
+        params = [threshold]
+    elif period == "month":
+        threshold = (datetime.now() - timedelta(days=30)).isoformat()
+        where = "WHERE passed_at >= ?"
+        params = [threshold]
+    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT user_id) FROM user_ops {where}", params)
+    row = cur.fetchone()
+    conn.close()
+    return {"count": row[0] or 0, "unique_users": row[1] or 0}
 
 
 # ================== PROMOS ==================
@@ -478,7 +599,7 @@ def get_promo_uses_list(code, limit=10):
 
 
 def _calc_promo_amount(amount, amount_min, p_type):
-    if p_type == "op" and amount_min and amount_min < amount:
+    if amount_min and amount_min < amount:
         return random.randint(amount_min, amount)
     return amount
 
@@ -536,7 +657,7 @@ def activate_promo_after_op(code, user_id):
     return calc
 
 
-# ================== CUSTOM OPS ==================
+# ================== CUSTOM OPS (не используются, оставлены) ==================
 def add_custom_op(title, link, op_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -581,7 +702,7 @@ def bh_reward_was_given(user_id, link):
     return row is not None
 
 
-# ================== CUSTOM TASKS ==================
+# ================== CUSTOM TASKS (не используются, оставлены) ==================
 def add_custom_task(title, link, check_type="bot", check_target=""):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
