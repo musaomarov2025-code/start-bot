@@ -963,7 +963,7 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
         f'<tg-emoji emoji-id="5765005318610228026">❌</tg-emoji> '
         f'За отписку или блокировку ресурса, вы получите бан\n\n'
         f'<b>Вознаграждение: +{reward} '
-        f'<tg-emoji emoji-id="5895708410446401643">🌟</tg-emoji></b>'
+        f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji></b>'
     )
     await message.answer(text,
                          reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
