@@ -4,9 +4,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 8742164697
 DB = "/app/data/bot.db"
 
+# === BOTOHUB (только ОП) ===
 BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
 BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
-BOTOHUB_TASKS_URL = "https://botohub.me/get-tasks"
+
+# === TGRASS (только задания) ===
+TGRASS_TOKEN = "956f48e72230412093162eb4e2d08b49"
+TGRASS_TASKS_URL = "https://tgrass.space/tasks"
+TGRASS_RESET_URL = "https://tgrass.space/reset_offers"
 
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
@@ -41,9 +46,9 @@ DEFAULTS = {
     "daily_bonus": "1",
     "min_withdraw": "15",
     "welcome_text": "Главное меню 👇",
-    "welcome_bonus": "15",              # бонус за /start (новым)
-    "withdraw_friends_required": "2",   # сколько друзей нужно для вывода
-    "withdraw_video_id": "",            # file_id видео при выводе
+    "welcome_bonus": "15",
+    "withdraw_friends_required": "2",
+    "withdraw_video_id": "",
 
     "priv_enabled": "1",
     "priv_text": "🚹 <b>Укажи свой пол</b> ⤵️",
@@ -52,6 +57,7 @@ DEFAULTS = {
         "👧 Я девушка - https://t.me/RuletkaMatchBot?start=savikpriv2509"
     ),
 
+    # === СПОНСОРЫ (ОП, Botohub) ===
     "botohub_enabled": "1",
     "botohub_entry_count": "2",
     "botohub_withdraw_count": "6",
@@ -61,8 +67,11 @@ DEFAULTS = {
         '"<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> Я Подписался"'
     ),
     "botohub_btn_text": "Подписаться",
-    "op_custom_entry_count": "0",
-    "tasks_enabled": "1",
-    "task_reward": "1",
+
+    # === ЗАДАНИЯ (Tgrass) ===
+    "tgrass_enabled": "1",
+    "tgrass_key": TGRASS_TOKEN,
+    "task_reward": "5",
+
     "broadcast_batch_default": "1000",
 }
