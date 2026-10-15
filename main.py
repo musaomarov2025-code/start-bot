@@ -886,7 +886,7 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
             parse_mode="HTML")
         return
 
-    if status == "no_offers":
+    if status in ("no_offers", "ok"):
         await message.answer(
             f'<tg-emoji emoji-id="5350460637182993292">🎉</tg-emoji> '
             f'<b>Ты молодец, выполнены все доступные задания!</b>\n\n'
@@ -900,74 +900,50 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
             parse_mode="HTML")
         return
 
-    if status == "ok":
-        # уже всё подписано — предлагаем сбросить список
+    offers = data.get("offers", [])
+    offer = None
+    for o in offers:
+        if not o.get("subscribed") and o.get("link"):
+            offer = o
+            break
+
+    if not offer:
         await message.answer(
-            f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> '
-            f'<b>Ты подписан на все задания!</b>\n\n'
+            f'<tg-emoji emoji-id="5350460637182993292">🎉</tg-emoji> '
+            f'<b>Ты молодец, выполнены все доступные задания!</b>\n\n'
             f'<tg-emoji emoji-id="5920433463428650761">🔄</tg-emoji> '
-            f'Жми, чтобы получить новые.',
+            f'Новые задания скоро появятся…',
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Новые задания",
+                [InlineKeyboardButton(text="Обновить задания",
                                       callback_data="tgrass_refresh",
                                       icon_custom_emoji_id="5386367538735104399")]
             ]),
             parse_mode="HTML")
-        return
-
-    # status == "not_ok" — показываем офферы
-    offers = data.get("offers", [])
-    if not offers:
-        await message.answer("На данный момент нет доступных заданий")
         return
 
     reward = int(get_setting("task_reward") or 5)
-
-    buttons = []
-    for offer in offers:
-        if offer.get("subscribed"):
-            continue
-        name = offer.get("name") or "Задание"
-        link = offer.get("link")
-        if not link:
-            continue
-        otype = offer.get("type")
-        btn_text = "Подписаться" if otype == "channel" else "Перейти"
-        buttons.append([InlineKeyboardButton(text=f"{btn_text} · {name}",
-                                             url=link,
-                                             icon_custom_emoji_id="5368733682917980020")])
-
-    if not buttons:
-        # нет неподписанных — все подписаны, но статус not_ok (странно) — сбросим
-        await message.answer(
-            f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> '
-            f'Всё выполнено! Жми «Новые задания».',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Новые задания",
-                                      callback_data="tgrass_refresh",
-                                      icon_custom_emoji_id="5386367538735104399")]
-            ]),
-            parse_mode="HTML")
-        return
-
-    buttons.append([InlineKeyboardButton(text="Проверить ✅",
-                                         callback_data="tgrass_check",
-                                         icon_custom_emoji_id="6026257381678124710")])
+    link = offer.get("link")
 
     text = (
         f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> '
         f'<b>Собирай Звёзды за простые задания!</b> '
         f'<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji>\n\n'
         f'<tg-emoji emoji-id="5980930633298350051">✅</tg-emoji> '
-        f'Подпишись на всё ниже и нажми «Проверить»\n\n'
+        f'Подпишись на канал и нажми «Подтвердить»\n\n'
         f'<tg-emoji emoji-id="5765005318610228026">❌</tg-emoji> '
         f'За отписку или блокировку ресурса, вы получите бан\n\n'
         f'<b>Вознаграждение: +{reward} '
         f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji></b>'
     )
-    await message.answer(text,
-                         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                         parse_mode="HTML")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Перейти", url=link,
+                              icon_custom_emoji_id="5368733682917980020"),
+         InlineKeyboardButton(text="Пропустить", callback_data="tgrass_skip",
+                              icon_custom_emoji_id="5260450573768990626")],
+        [InlineKeyboardButton(text="Подтвердить", callback_data="tgrass_check",
+                              icon_custom_emoji_id="6026257381678124710")],
+    ])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.message(F.text == "Задания")
@@ -994,11 +970,26 @@ async def tgrass_refresh(call: CallbackQuery):
         await call.message.delete()
     except Exception:
         pass
-    await call.message.answer(
-        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ищу новое задание...',
-        parse_mode="HTML")
     await _show_tgrass_tasks(
         call.message, u.id, u.username,
+        getattr(u, "language_code", "ru"),
+        getattr(u, "is_premium", False))
+
+
+@dp.callback_query(F.data == "tgrass_skip")
+async def tgrass_skip(call: CallbackQuery):
+    user_id = call.from_user.id
+    u = call.from_user
+    await call.answer()
+    if not await _guard_ops(call):
+        return
+    await tgrass_reset_offers(user_id)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await _show_tgrass_tasks(
+        call.message, user_id, u.username,
         getattr(u, "language_code", "ru"),
         getattr(u, "is_premium", False))
 
@@ -1015,53 +1006,39 @@ async def tgrass_check(call: CallbackQuery):
         is_premium=getattr(u, "is_premium", False))
     status = data.get("status")
 
-    if status == "not_ok":
-        # ещё не всё подписано — обновим сообщение
-        try:
-            await call.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await call.answer("Подпишись на все задания и попробуй ещё раз", show_alert=True)
+    if status != "ok":
+        await call.answer("Подпишись и попробуй ещё раз", show_alert=True)
         return
 
-    if status == "ok":
-        reward = int(get_setting("task_reward") or 5)
-        add_balance(user_id, reward)
-        add_ad_stars(user_id, reward)
+    reward = int(get_setting("task_reward") or 5)
+    add_balance(user_id, reward)
+    add_ad_stars(user_id, reward)
 
-        # помечаем все офферы из последнего ответа как выполненные
-        for offer in data.get("offers", []):
-            oid = offer.get("offer_id")
-            if oid:
-                mark_task_completed(user_id, oid, reward)
+    for o in data.get("offers", []):
+        oid = o.get("offer_id")
+        if oid:
+            mark_task_completed(user_id, oid, reward)
 
-        # сбрасываем список, чтобы получить новые
-        await tgrass_reset_offers(user_id)
+    await tgrass_reset_offers(user_id)
 
-        balance = get_balance(user_id)
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-        await call.message.answer(
-            f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Задание выполнено!</b>\n\n'
-            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
-            f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
-            f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
-            f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>',
-            parse_mode="HTML")
-        # сразу предложим новые
-        await _show_tgrass_tasks(
-            call.message, user_id, u.username,
-            getattr(u, "language_code", "ru"),
-            getattr(u, "is_premium", False))
-        return
+    balance = get_balance(user_id)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.message.answer(
+        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Задание выполнено!</b>\n\n'
+        f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
+        parse_mode="HTML")
 
-    if status == "no_offers":
-        await call.answer("Заданий нет", show_alert=True)
-        return
-
-    await call.answer("Ошибка сервиса. Попробуй позже", show_alert=True)
+    await _show_tgrass_tasks(
+        call.message, user_id, u.username,
+        getattr(u, "language_code", "ru"),
+        getattr(u, "is_premium", False))
 
 
 # ============ ВЫВОД ============
