@@ -170,6 +170,7 @@ async def tgrass_get_tasks(user_id, username=None, lang="ru", is_premium=False):
         "tg_user_id": user_id,
         "is_premium": bool(is_premium),
         "lang": lang or "ru",
+        "offers_limit": 1,
     }
     if username:
         payload["tg_login"] = username
