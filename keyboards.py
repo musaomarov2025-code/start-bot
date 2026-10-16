@@ -51,9 +51,8 @@ def gifts_kb():
 
 
 def task_kb(offer_id):
-    """Клавиатура задания Tgrass. offer_id — id оффера для callback."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Проверить ✅", callback_data="tgrass_check",
+        [InlineKeyboardButton(text="Проверить ✅", callback_data="piarflow_check",
                               icon_custom_emoji_id="6026257381678124710")],
     ])
 
@@ -114,7 +113,7 @@ def admin_kb():
          InlineKeyboardButton(text="📋 Заявки", callback_data="wd_list")],
         [InlineKeyboardButton(text="🎛 Приватка", callback_data="priv_menu"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="🎯 Задания Tgrass", callback_data="tasks_menu")],
+        [InlineKeyboardButton(text="🎯 Задания PiarFlow", callback_data="tasks_menu")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="broadcast_menu"),
          InlineKeyboardButton(text="🎟 Промокоды", callback_data="promos")],
         [InlineKeyboardButton(text="📊 Реклама", callback_data="ad_menu"),
@@ -155,7 +154,6 @@ def admin_wd_kb(wid):
 
 
 def wd_page_kb(wid, idx, total):
-    """Клавиатура для одной заявки с листалкой."""
     nav_row = []
     if idx > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"wd_page:{idx-1}"))
