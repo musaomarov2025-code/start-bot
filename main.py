@@ -36,7 +36,7 @@ from database import (
     get_stats, get_top_balance, get_top_refs,
     create_promo, get_promo, get_promo_op_reqs, list_promos, delete_promo,
     activate_promo, activate_promo_after_op, get_promo_uses_list,
-    add_custom_op, list_custom_ops, delete_custom_op,
+    bh_reward_mark, bh_reward_was_given,
     add_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
     get_next_custom_task, mark_custom_task_done,
     mark_op_passed, get_user_passed_ops, has_op_passed,
@@ -219,25 +219,6 @@ def build_priv_buttons():
         return None
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
-# ============ BOTOHUB (ОП) ============
-def bh_enabled():
-    return get_setting("botohub_enabled") == "1"
-
-
-async def bh_get_tasks(chat_id, count):
-    if not BOTOHUB_TOKEN:
-        return {"tasks": [], "completed": True, "skip": True}
-    payload = {"chat_id": chat_id, "max_op": count}
-    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(BOTOHUB_URL, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=15)) as r:
-                return await r.json()
-    except Exception as e:
-        print("Botohub ОП error:", e)
-        return {"tasks": [], "completed": True, "skip": True}
 
 # ============ СБОР ОП (BOTOHUB) ============
 async def _get_botohub_pending(user_id):
@@ -743,8 +724,8 @@ async def daily_claim(call: CallbackQuery):
     try:
         await call.message.edit_text(
             f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневный бонус получен!</b>\n\n'
-            f'<tg-emoji emoji-id="602597694608("3500432">💰</tg-emoji❌> +{amount}'
-            f'<tg- Уemoji emoji-id="589570841044 те7401643">🌟</tg-emoji>\n'
+            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> +{amount}'
+            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>\n'
             f'<tg-emoji emoji-id="5920281855378068765">⭐️</tg-emoji> Баланс: {balance} '
             f'<tg-emoji emoji-id="5897501460509234625">⭐️</tg-emoji>',
             reply_markup=daily_back_kb(), parse_mode="HTML")
@@ -818,7 +799,7 @@ async def ad_stats_cmd(message: Message):
         await message.answer("❌ Такой метки не существует.")
         return
     if src[1] != user_id and user_id != ADMIN_ID:
-        await message.answerбя нет доступа к этой метке.")
+        await message.answer("❌ У тебя нет доступа к этой метке.")
         return
 
     owner_username = src[2] or ""
@@ -1728,7 +1709,7 @@ async def set_value_save(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {key}", reply_markup=back_admin_kb())
 
 
-# ---------- ПРОМОКОДЫ (упрощённые) ----------
+# ---------- ПРОМОКОДЫ ----------
 @dp.callback_query(F.data == "promos")
 async def promos(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
