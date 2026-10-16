@@ -8,11 +8,9 @@ DB = "/app/data/bot.db"
 BOTOHUB_TOKEN = "1196d848-7318-4c55-a643-bc0d2e709525"
 BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
 
-# === TGRASS (только задания) ===
-TGRASS_TOKEN = "956f48e72230412093162eb4e2d08b49"
-TGRASS_TASKS_URL = "https://tgrass.space/tasks"
-TGRASS_RESET_URL = "https://tgrass.space/reset_offers"
-TGRASS_CHECK_URL = "https://tgrass.space/check"
+# === PIARFLOW (только задания) ===
+PIARFLOW_TOKEN = "cbxqaAcWQgT7ogU34d8lxiRO8Bc1oQyl"
+PIARFLOW_URL = "https://piarflow.com/v1"
 
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
@@ -69,9 +67,9 @@ DEFAULTS = {
     ),
     "botohub_btn_text": "Подписаться",
 
-    # === ЗАДАНИЯ (Tgrass) ===
-    "tgrass_enabled": "1",
-    "tgrass_key": TGRASS_TOKEN,
+    # === ЗАДАНИЯ (PiarFlow) ===
+    "piarflow_enabled": "1",
+    "piarflow_key": PIARFLOW_TOKEN,
     "task_reward": "5",
 
     "broadcast_batch_default": "1000",
