@@ -12,6 +12,7 @@ BOTOHUB_URL = "https://botohub.me/get-tasks-extended"
 TGRASS_TOKEN = "956f48e72230412093162eb4e2d08b49"
 TGRASS_TASKS_URL = "https://tgrass.space/tasks"
 TGRASS_RESET_URL = "https://tgrass.space/reset_offers"
+TGRASS_CHECK_URL = "https://tgrass.space/check"
 
 REFERRAL_DAYS = 7
 REFERRAL_REMIND_MIN = 3
