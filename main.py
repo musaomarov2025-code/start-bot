@@ -19,7 +19,7 @@ from aiogram.fsm.context import FSMContext
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, GIFTS_EMOJI, REFERRAL_DAYS, DB,
     BOTOHUB_TOKEN, BOTOHUB_URL,
-    TGRASS_TOKEN, TGRASS_TASKS_URL, TGRASS_RESET_URL, TGRASS_CHECK_URL,
+    PIARFLOW_TOKEN, PIARFLOW_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
@@ -132,95 +132,46 @@ class WDVideo(StatesGroup):
     waiting_video = State()
 
 
-# ============ BOTOHUB (ОП) ============
-def bh_enabled():
-    return get_setting("botohub_enabled") == "1"
+# ============ PIARFLOW (ЗАДАНИЯ) ============
+def piarflow_enabled():
+    return get_setting("piarflow_enabled") == "1"
 
 
-async def bh_get_tasks(chat_id, count):
-    if not BOTOHUB_TOKEN:
-        return {"tasks": [], "completed": True, "skip": True}
-    payload = {"chat_id": chat_id, "max_op": count}
-    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(BOTOHUB_URL, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=15)) as r:
-                return await r.json()
-    except Exception as e:
-        print("Botohub ОП error:", e)
-        return {"tasks": [], "completed": True, "skip": True}
-
-
-# ============ TGRASS (ЗАДАНИЯ) ============
-def tgrass_enabled():
-    return get_setting("tgrass_enabled") == "1"
-
-
-async def tgrass_get_tasks(user_id, username=None, lang="ru", is_premium=False):
-    """
-    POST /tasks. Возвращает dict:
-      {"status": "ok"|"not_ok"|"no_offers"|"error", "offers": [...]}
-    """
-    key = get_setting("tgrass_key") or TGRASS_TOKEN
+async def piarflow_request(path, payload):
+    key = get_setting("piarflow_key") or PIARFLOW_TOKEN
     if not key:
-        return {"status": "error", "offers": [], "message": "no key"}
-
-    payload = {
-        "tg_user_id": user_id,
-        "is_premium": bool(is_premium),
-        "lang": lang or "ru",
-        "offers_limit": 1,
+        return {"status": "error", "message": "no key"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
     }
-    if username:
-        payload["tg_login"] = username
-
-    headers = {"Auth": key, "Content-Type": "application/json"}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(TGRASS_TASKS_URL, json=payload, headers=headers,
+            async with s.post(f"{PIARFLOW_URL}{path}", json=payload,
+                              headers=headers,
                               timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json(content_type=None)
-                print("TGRASS RESPONSE:", data)
+                print(f"PIARFLOW {path}:", data)
                 return data
     except Exception as e:
-        print("Tgrass error:", e)
-        return {"status": "error", "offers": [], "message": str(e)}
-
-async def tgrass_check_offer(user_id, offer_id):
-    key = get_setting("tgrass_key") or TGRASS_TOKEN
-    if not key:
-        return False
-    payload = {"tg_user_id": user_id, "offer_id": offer_id}
-    headers = {"Auth": key, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(TGRASS_CHECK_URL, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=10)) as r:
-                data = await r.json(content_type=None)
-                print("TGRASS CHECK OFFER:", data)
-                return data.get("status") == "subscribed"
-    except Exception as e:
-        print("Tgrass check error:", e)
-        return False
+        print("PiarFlow error:", e)
+        return {"status": "error", "message": str(e)}
 
 
-async def tgrass_reset_offers(user_id):
-    key = get_setting("tgrass_key") or TGRASS_TOKEN
-    if not key:
-        return
-    headers = {"Auth": key, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(TGRASS_RESET_URL, json={"tg_user_id": user_id},
-                              headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=10)) as r:
-                await r.json(content_type=None)
-    except Exception as e:
-        print("Tgrass reset error:", e)
+async def piarflow_get_sponsors(user_id, chat_id, max_sponsors=1):
+    return await piarflow_request("/sponsors", {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "max_sponsors": max_sponsors,
+    })
 
 
-# ============ ПРИВАТКА ============
+async def piarflow_check(user_id, links):
+    return await piarflow_request("/sponsors/check", {
+        "user_id": user_id,
+        "links": links,
+    })
+    # ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -892,37 +843,23 @@ async def ad_stats_cmd(message: Message):
     await message.answer(text, parse_mode="HTML")
 
 
-# ============ ЗАДАНИЯ (TGRASS) ============
-async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
-    data = await tgrass_get_tasks(user_id, username=username, lang=lang, is_premium=is_premium)
-    status = data.get("status")
+# ============ ЗАДАНИЯ (PIARFLOW) ============
+async def _show_piarflow_tasks(message, user_id, chat_id):
+    data = await piarflow_get_sponsors(user_id, chat_id, max_sponsors=1)
 
-    if status == "error":
+    if data.get("status") != "ok":
         await message.answer(
             f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> '
             f'<b>Ошибка сервиса заданий</b>\n\nПопробуй позже.',
             parse_mode="HTML")
         return
 
-    if status in ("no_offers", "ok"):
-        await message.answer(
-            f'<tg-emoji emoji-id="5350460637182993292">🎉</tg-emoji> '
-            f'<b>Ты молодец, выполнены все доступные задания!</b>\n\n'
-            f'<tg-emoji emoji-id="5920433463428650761">🔄</tg-emoji> '
-            f'Новые задания скоро появятся…',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Обновить задания",
-                                      callback_data="tgrass_refresh",
-                                      icon_custom_emoji_id="5386367538735104399")]
-            ]),
-            parse_mode="HTML")
-        return
+    sponsors = data.get("sponsors", []) or []
 
-    offers = data.get("offers", [])
     offer = None
-    for o in offers:
-        if not o.get("subscribed") and o.get("link"):
-            offer = o
+    for s in sponsors:
+        if s.get("status") == "unsubscribed" and s.get("link"):
+            offer = s
             break
 
     if not offer:
@@ -933,7 +870,7 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
             f'Новые задания скоро появятся…',
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Обновить задания",
-                                      callback_data="tgrass_refresh",
+                                      callback_data="piarflow_refresh",
                                       icon_custom_emoji_id="5386367538735104399")]
             ]),
             parse_mode="HTML")
@@ -956,9 +893,9 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Перейти", url=link,
                               icon_custom_emoji_id="5368733682917980020"),
-         InlineKeyboardButton(text="Пропустить", callback_data="tgrass_skip",
+         InlineKeyboardButton(text="Пропустить", callback_data="piarflow_skip",
                               icon_custom_emoji_id="5260450573768990626")],
-        [InlineKeyboardButton(text="Подтвердить", callback_data="tgrass_check",
+        [InlineKeyboardButton(text="Подтвердить", callback_data="piarflow_check",
                               icon_custom_emoji_id="6026257381678124710")],
     ])
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
@@ -968,77 +905,59 @@ async def _show_tgrass_tasks(message, user_id, username, lang, is_premium):
 async def tasks_menu(message: Message):
     if not await _guard_ops(message):
         return
-    if not tgrass_enabled():
+    if not piarflow_enabled():
         await message.answer("❌ Задания временно недоступны.")
         return
-    u = message.from_user
-    await _show_tgrass_tasks(
-        message, u.id, u.username,
-        getattr(u, "language_code", "ru"),
-        getattr(u, "is_premium", False))
+    await _show_piarflow_tasks(message, message.from_user.id, message.chat.id)
 
 
-@dp.callback_query(F.data == "tgrass_refresh")
-async def tgrass_refresh(call: CallbackQuery):
+@dp.callback_query(F.data == "piarflow_refresh")
+async def piarflow_refresh(call: CallbackQuery):
     if not await _guard_ops(call):
         return
-    u = call.from_user
-    await tgrass_reset_offers(u.id)
     try:
         await call.message.delete()
     except Exception:
         pass
-    await _show_tgrass_tasks(
-        call.message, u.id, u.username,
-        getattr(u, "language_code", "ru"),
-        getattr(u, "is_premium", False))
+    await _show_piarflow_tasks(call.message, call.from_user.id, call.from_user.id)
 
 
-@dp.callback_query(F.data == "tgrass_skip")
-async def tgrass_skip(call: CallbackQuery):
-    user_id = call.from_user.id
-    u = call.from_user
-    await call.answer()
+@dp.callback_query(F.data == "piarflow_skip")
+async def piarflow_skip(call: CallbackQuery):
     if not await _guard_ops(call):
         return
-    await tgrass_reset_offers(user_id)
     try:
         await call.message.delete()
     except Exception:
         pass
-    await _show_tgrass_tasks(
-        call.message, user_id, u.username,
-        getattr(u, "language_code", "ru"),
-        getattr(u, "is_premium", False))
+    await _show_piarflow_tasks(call.message, call.from_user.id, call.from_user.id)
 
 
-@dp.callback_query(F.data == "tgrass_check")
-async def tgrass_check(call: CallbackQuery):
+@dp.callback_query(F.data == "piarflow_check")
+async def piarflow_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
-    u = call.from_user
 
-    data = await tgrass_get_tasks(
-        user_id, username=u.username,
-        lang=getattr(u, "language_code", "ru"),
-        is_premium=getattr(u, "is_premium", False))
+    # берём ссылку из кнопки «Перейти» в текущем сообщении
+    link = None
+    try:
+        for row in call.message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url and "t.me" in btn.url:
+                    link = btn.url
+                    break
+            if link:
+                break
+    except Exception:
+        pass
 
-    offers = data.get("offers", [])
-    offer = None
-    for o in offers:
-        if not o.get("subscribed") and o.get("link"):
-            offer = o
-            break
-
-    if not offer:
-        await call.answer("Нет активного задания", show_alert=True)
+    if not link:
+        await call.answer("Ошибка: нет ссылки задания", show_alert=True)
         return
 
-    oid = offer.get("offer_id")
-    if not oid:
-        await call.answer("Ошибка: нет ID оффера", show_alert=True)
-        return
+    data = await piarflow_check(user_id, [link])
+    sponsors = data.get("sponsors", []) or []
+    ok = bool(sponsors) and all(s.get("status") == "subscribed" for s in sponsors)
 
-    ok = await tgrass_check_offer(user_id, oid)
     if not ok:
         await call.answer("❌ Подпишись и попробуй ещё раз", show_alert=True)
         return
@@ -1046,8 +965,6 @@ async def tgrass_check(call: CallbackQuery):
     reward = int(get_setting("task_reward") or 5)
     add_balance(user_id, reward)
     add_ad_stars(user_id, reward)
-    mark_task_completed(user_id, oid, reward)
-    await tgrass_reset_offers(user_id)
 
     balance = get_balance(user_id)
     try:
@@ -1059,14 +976,11 @@ async def tgrass_check(call: CallbackQuery):
         f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
         f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
         f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
-        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n\n'
-        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n592\n'
+        f'<tg-emoji emoji-id="0433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
         parse_mode="HTML")
 
-    await _show_tgrass_tasks(
-        call.message, user_id, u.username,
-        getattr(u, "language_code", "ru"),
-        getattr(u, "is_premium", False))
+    await _show_piarflow_tasks(call.message, user_id, user_id)
 
 # ============ ВЫВОД ============
 async def _show_gifts_with_video(chat_id, user_id):
@@ -1384,31 +1298,27 @@ async def bh_save_wd(message: Message, state: FSMContext):
     await message.answer(f"✅ Сохранено: {val}", reply_markup=back_admin_kb())
 
 
-# ---------- ЗАДАНИЯ TGRASS ----------
+# ---------- ЗАДАНИЯ PIARFLOW ----------
 def tasks_menu_text():
-    enabled = tgrass_enabled()
-    key = get_setting("tgrass_key") or TGRASS_TOKEN
+    enabled = piarflow_enabled()
+    key = get_setting("piarflow_key") or PIARFLOW_TOKEN
     return (
-        f"🎯 <b>Задания (Tgrass)</b>\n\n"
+        f"🎯 <b>Задания (PiarFlow)</b>\n\n"
         f"Статус: {'🟢 включены' if enabled else '🔴 выключены'}\n"
         f"🔑 Ключ: <code>{key[:12]}...</code>\n\n"
         f"💰 Награда за задание: <b>{get_setting('task_reward')}</b> ⭐"
     )
-
-
 @dp.callback_query(F.data == "tasks_menu")
 async def tasks_admin_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    await call.message.edit_text(tasks_menu_text(), reply_markup=tasks_kb(tgrass_enabled()), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "tasks_toggle")
+    await call.message.edit_text(tasks_menu_text(), reply_markup=tasks_kb(piarflow_enabled()), parse_mode="HTML")
+    @dp.callback_query(F.data == "tasks_toggle")
 async def tasks_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
-    current = get_setting("tgrass_enabled") == "1"
-    set_setting("tgrass_enabled", "0" if current else "1")
+    current = get_setting("piarflow_enabled") == "1"
+    set_setting("piarflow_enabled", "0" if current else "1")
     await call.answer("✅ Изменено")
     await call.message.edit_text(tasks_menu_text(), reply_markup=tasks_kb(not current), parse_mode="HTML")
 
