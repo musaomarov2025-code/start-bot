@@ -36,7 +36,7 @@ from database import (
     get_stats, get_top_balance, get_top_refs,
     create_promo, get_promo, get_promo_op_reqs, list_promos, delete_promo,
     activate_promo, activate_promo_after_op, get_promo_uses_list,
-    bh_reward_mark, bh_reward_was_given,
+    add_custom_op, list_custom_ops, delete_custom_op,
     add_custom_task, list_custom_tasks, get_custom_task, delete_custom_task,
     get_next_custom_task, mark_custom_task_done,
     mark_op_passed, get_user_passed_ops, has_op_passed,
@@ -132,6 +132,26 @@ class WDVideo(StatesGroup):
     waiting_video = State()
 
 
+# ============ BOTOHUB (ОП) ============
+def bh_enabled():
+    return get_setting("botohub_enabled") == "1"
+
+
+async def bh_get_tasks(chat_id, count):
+    if not BOTOHUB_TOKEN:
+        return {"tasks": [], "completed": True, "skip": True}
+    payload = {"chat_id": chat_id, "max_op": count}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(BOTOHUB_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                return await r.json()
+    except Exception as e:
+        print("Botohub ОП error:", e)
+        return {"tasks": [], "completed": True, "skip": True}
+
+
 # ============ PIARFLOW (ЗАДАНИЯ) ============
 def piarflow_enabled():
     return get_setting("piarflow_enabled") == "1"
@@ -171,7 +191,9 @@ async def piarflow_check(user_id, links):
         "user_id": user_id,
         "links": links,
     })
-    # ============ ПРИВАТКА ============
+
+
+# ============ ПРИВАТКА ============
 def build_priv_buttons():
     raw = get_setting("priv_buttons")
     if not raw:
@@ -702,8 +724,8 @@ async def daily_claim(call: CallbackQuery):
     try:
         await call.message.edit_text(
             f'<tg-emoji emoji-id="5784964035929707157">🎁</tg-emoji> <b>Ежедневный бонус получен!</b>\n\n'
-            f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> +{amount}'
-            f'<tg-emoji emoji-id="5895708410447401643">🌟</tg-emoji>\n'
+            f'<tg-emoji emoji-id="602597694608("3500432">💰</tg-emoji❌> +{amount}'
+            f'<tg- Уemoji emoji-id="589570841044 те7401643">🌟</tg-emoji>\n'
             f'<tg-emoji emoji-id="5920281855378068765">⭐️</tg-emoji> Баланс: {balance} '
             f'<tg-emoji emoji-id="5897501460509234625">⭐️</tg-emoji>',
             reply_markup=daily_back_kb(), parse_mode="HTML")
@@ -777,7 +799,7 @@ async def ad_stats_cmd(message: Message):
         await message.answer("❌ Такой метки не существует.")
         return
     if src[1] != user_id and user_id != ADMIN_ID:
-        await message.answer("❌ У тебя нет доступа к этой метке.")
+        await message.answerбя нет доступа к этой метке.")
         return
 
     owner_username = src[2] or ""
@@ -937,12 +959,11 @@ async def piarflow_skip(call: CallbackQuery):
 async def piarflow_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
 
-    # берём ссылку из кнопки «Перейти» в текущем сообщении
     link = None
     try:
         for row in call.message.reply_markup.inline_keyboard:
             for btn in row:
-                if btn.url and "t.me" in btn.url:
+                if btn.url:
                     link = btn.url
                     break
             if link:
@@ -976,182 +997,12 @@ async def piarflow_check_cb(call: CallbackQuery):
         f'<tg-emoji emoji-id="6025976946083500432">💰</tg-emoji> Награда: <b>+{reward}</b> '
         f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
         f'<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji> Баланс: <b>{balance}</b> '
-        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n592\n'
-        f'<tg-emoji emoji-id="0433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
         parse_mode="HTML")
 
     await _show_piarflow_tasks(call.message, user_id, user_id)
-
-# ============ ВЫВОД ============
-async def _show_gifts_with_video(chat_id, user_id):
-    video_id = get_setting("withdraw_video_id")
-    kb = gifts_kb()
-    caption = '<tg-emoji emoji-id="5427236501903655352">❣️</tg-emoji> <b>Выбери подарок</b>'
-    try:
-        if video_id:
-            await bot.send_video(
-                chat_id=chat_id, video=video_id,
-                caption=caption, reply_markup=kb, parse_mode="HTML")
-        else:
-            await bot.send_message(chat_id, caption, reply_markup=kb, parse_mode="HTML")
-    except Exception as e:
-        print("video send error:", e)
-        try:
-            await bot.send_message(chat_id, caption, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            pass
-
-
-@dp.message(F.text == "Вывести звёзды")
-async def withdraw(message: Message, state: FSMContext):
-    if not await _guard_ops(message):
-        return
-    await state.clear()
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    w = get_waiting_withdraw(user_id)
-    if w:
-        await _show_friends_screen(message, user_id)
-        return
-
-    extra_items = []
-    if bh_enabled() and BOTOHUB_TOKEN:
-        try:
-            wd_count = int(get_setting("botohub_withdraw_count"))
-        except Exception:
-            wd_count = 6
-        data = await bh_get_tasks(user_id, wd_count)
-        tasks = data.get("tasks", [])
-        not_done = [t for t in tasks if not t.get("completed")]
-        for t in not_done:
-            link = t.get("url")
-            if link:
-                extra_items.append((f"bh_wd:{link}", "Подписаться", link, False))
-
-    if extra_items:
-        PENDING_WD[user_id] = "next_gift"
-        await bot.send_message(
-            chat_id, get_setting("botohub_text"),
-            reply_markup=op_screen_kb(extra_items, confirm_callback="op_check_wd"),
-            parse_mode="HTML")
-        return
-
-    await _show_gifts_with_video(chat_id, user_id)
-
-
-@dp.callback_query(F.data == "op_check_wd")
-async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
-    user_id = call.from_user.id
-    await asyncio.sleep(2)
-
-    still_not_done = []
-    if bh_enabled() and BOTOHUB_TOKEN:
-        try:
-            wd_count = int(get_setting("botohub_withdraw_count"))
-        except Exception:
-            wd_count = 6
-        data = await bh_get_tasks(user_id, wd_count)
-        tasks = data.get("tasks", [])
-        still_not_done = [t for t in tasks if not t.get("completed") and t.get("url")]
-
-    if still_not_done:
-        await call.answer("Ты ещё не подписался на все каналы", show_alert=True)
-        return
-
-    await call.answer()
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-
-    await _show_gifts_with_video(user_id, user_id)
-
-
-@dp.callback_query(F.data.startswith("gift:"))
-async def cb_gift(call: CallbackQuery, state: FSMContext):
-    if not await _guard_ops(call):
-        return
-    key = call.data.split(":")[1]
-    if key not in GIFTS:
-        await call.answer("Подарок не найден")
-        return
-    name, price = GIFTS[key]
-    balance = get_balance(call.from_user.id)
-    if balance < price:
-        need_sum = price - balance
-        await call.answer(f"❌ Не хватает {need_sum} ⭐\nНужно: {price} ⭐\nУ тебя: {balance} ⭐",
-                          show_alert=True)
-        return
-
-    user_id = call.from_user.id
-    need = _friends_required()
-    refs_now = get_confirmed_refs_count(user_id)
-
-    if refs_now >= need:
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-        await create_order(call, key)
-        return
-
-    set_waiting_withdraw(user_id, key)
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await _show_friends_screen(user_id, user_id)
-
-
-@dp.callback_query(F.data == "wd_friends_check")
-async def wd_friends_check_cb(call: CallbackQuery):
-    user_id = call.from_user.id
-    ok = await _check_and_fulfill_waiting(user_id)
-    await call.answer("Обновлено", show_alert=True)
-    if ok:
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-        return
-    w = get_waiting_withdraw(user_id)
-    if not w:
-        return
-    await _show_friends_screen(call, user_id, edit_message=True)
-
-
-async def create_order(call: CallbackQuery, key):
-    name, price = GIFTS[key]
-    gift_emoji_id = GIFTS_EMOJI.get(key, "")
-    balance = get_balance(call.from_user.id)
-    if balance < price:
-        await call.answer(f"❌ Нужно {price} ⭐", show_alert=True)
-        return
-    wid = create_withdrawal(call.from_user.id, price, key)
-    new_balance = get_balance(call.from_user.id)
-    uname = f"@{call.from_user.username}" if call.from_user.username else "без username"
-
-    text = (
-        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Заявка #{wid} создана!</b>\n\n'
-        f'<tg-emoji emoji-id="5449800250032143374">🎁</tg-emoji> Подарок: '
-        f'<tg-emoji emoji-id="{gift_emoji_id}">🎁</tg-emoji> {name}\n'
-        f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Твой баланс: <b>{new_balance}</b> '
-        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
-        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
-    )
-    try:
-        await bot.send_message(call.from_user.id, text, parse_mode="HTML")
-    except Exception as e:
-        print("Ошибка юзеру:", e)
-    try:
-        await bot.send_message(ADMIN_ID,
-            f"💸 <b>Новая заявка #{wid}</b>\n\n👤 {uname}\n"
-            f"🆔 <code>{call.from_user.id}</code>\n🎁 {name}\n💰 {price} ⭐",
-            reply_markup=admin_wd_kb(wid), parse_mode="HTML")
-    except Exception as e:
-        print("Ошибка админу:", e)
-        # ================== АДМИНКА ==================
+    # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -1308,12 +1159,15 @@ def tasks_menu_text():
         f"🔑 Ключ: <code>{key[:12]}...</code>\n\n"
         f"💰 Награда за задание: <b>{get_setting('task_reward')}</b> ⭐"
     )
+
+
 @dp.callback_query(F.data == "tasks_menu")
 async def tasks_admin_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.edit_text(tasks_menu_text(), reply_markup=tasks_kb(piarflow_enabled()), parse_mode="HTML")
-    
+
+
 @dp.callback_query(F.data == "tasks_toggle")
 async def tasks_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -1348,7 +1202,6 @@ async def tasks_save_reward(message: Message, state: FSMContext):
 
 # ---------- ЗАЯВКИ (листалка + массовые) ----------
 async def _render_wd_page(target, idx, edit=False):
-    """target — CallbackQuery или Message. idx — индекс в списке pending."""
     rows = get_pending_withdrawals_all()
     total = len(rows)
 
@@ -1771,7 +1624,7 @@ async def stats(call: CallbackQuery):
         f"📅 Новых сегодня: <b>{s['today']}</b>\n"
         f"💰 Общий баланс: <b>{s['total_balance']}</b> ⭐\n"
         f"👥 Подтверждённых рефералов: <b>{s['total_refs']}</b>\n\n"
-        f"✅ <b>ЗАДАНИЯ (Tgrass):</b>\n"
+        f"✅ <b>ЗАДАНИЯ (PiarFlow):</b>\n"
         f"   Всего: <b>{t_all['count']}</b> (уник. {t_all['unique_users']})\n"
         f"   За сегодня: <b>{t_today['count']}</b>\n"
         f"   За неделю: <b>{t_week['count']}</b>\n"
