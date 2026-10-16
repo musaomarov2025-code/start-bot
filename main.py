@@ -19,7 +19,7 @@ from aiogram.fsm.context import FSMContext
 from config import (
     BOT_TOKEN, ADMIN_ID, GIFTS, GIFTS_EMOJI, REFERRAL_DAYS, DB,
     BOTOHUB_TOKEN, BOTOHUB_URL,
-    TGRASS_TOKEN, TGRASS_TASKS_URL, TGRASS_RESET_URL,
+    TGRASS_TOKEN, TGRASS_TASKS_URL, TGRASS_RESET_URL, TGRASS_CHECK_URL,
 )
 from database import (
     init_db, get_setting, set_setting,
