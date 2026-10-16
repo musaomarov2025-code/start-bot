@@ -186,23 +186,6 @@ async def tgrass_get_tasks(user_id, username=None, lang="ru", is_premium=False):
         print("Tgrass error:", e)
         return {"status": "error", "offers": [], "message": str(e)}
 
-async def tgrass_check_offer(user_id, offer_id):
-    key = get_setting("tgrass_key") or TGRASS_TOKEN
-    if not key:
-        return False
-    payload = {"tg_user_id": user_id, "offer_id": offer_id}
-    headers = {"Auth": key, "Content-Type": "application/json"}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(TGRASS_CHECK_URL, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=10)) as r:
-                data = await r.json(content_type=None)
-                print("TGRASS CHECK OFFER:", data)
-                return data.get("status") == "subscribed"
-    except Exception as e:
-        print("Tgrass check error:", e)
-        return False
-
 
 async def tgrass_reset_offers(user_id):
     key = get_setting("tgrass_key") or TGRASS_TOKEN
@@ -1015,31 +998,37 @@ async def tgrass_skip(call: CallbackQuery):
 async def tgrass_check(call: CallbackQuery):
     user_id = call.from_user.id
     u = call.from_user
-    await call.answer("⏳ Проверяю...")
 
     data = await tgrass_get_tasks(
         user_id, username=u.username,
         lang=getattr(u, "language_code", "ru"),
         is_premium=getattr(u, "is_premium", False))
-    status = data.get("status")
 
-    if status != "ok":
-        try:
-            await call.answer(f"Статус: {status}", show_alert=True)
-        except Exception:
-            pass
-        print("TGRASS CHECK:", data)
+    offers = data.get("offers", [])
+    offer = None
+    for o in offers:
+        if not o.get("subscribed") and o.get("link"):
+            offer = o
+            break
+
+    if not offer:
+        await call.answer("Нет активного задания", show_alert=True)
+        return
+
+    oid = offer.get("offer_id")
+    if not oid:
+        await call.answer("Ошибка: нет ID оффера", show_alert=True)
+        return
+
+    ok = await tgrass_check_offer(user_id, oid)
+    if not ok:
+        await call.answer("❌ Подпишись и попробуй ещё раз", show_alert=True)
         return
 
     reward = int(get_setting("task_reward") or 5)
     add_balance(user_id, reward)
     add_ad_stars(user_id, reward)
-
-    for o in data.get("offers", []):
-        oid = o.get("offer_id")
-        if oid:
-            mark_task_completed(user_id, oid, reward)
-
+    mark_task_completed(user_id, oid, reward)
     await tgrass_reset_offers(user_id)
 
     balance = get_balance(user_id)
@@ -1060,7 +1049,6 @@ async def tgrass_check(call: CallbackQuery):
         call.message, user_id, u.username,
         getattr(u, "language_code", "ru"),
         getattr(u, "is_premium", False))
-
 
 # ============ ВЫВОД ============
 async def _show_gifts_with_video(chat_id, user_id):
