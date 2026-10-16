@@ -186,6 +186,23 @@ async def tgrass_get_tasks(user_id, username=None, lang="ru", is_premium=False):
         print("Tgrass error:", e)
         return {"status": "error", "offers": [], "message": str(e)}
 
+async def tgrass_check_offer(user_id, offer_id):
+    key = get_setting("tgrass_key") or TGRASS_TOKEN
+    if not key:
+        return False
+    payload = {"tg_user_id": user_id, "offer_id": offer_id}
+    headers = {"Auth": key, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(TGRASS_CHECK_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=10)) as r:
+                data = await r.json(content_type=None)
+                print("TGRASS CHECK OFFER:", data)
+                return data.get("status") == "subscribed"
+    except Exception as e:
+        print("Tgrass check error:", e)
+        return False
+
 
 async def tgrass_reset_offers(user_id):
     key = get_setting("tgrass_key") or TGRASS_TOKEN
