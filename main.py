@@ -1313,7 +1313,8 @@ async def tasks_admin_menu(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
     await call.message.edit_text(tasks_menu_text(), reply_markup=tasks_kb(piarflow_enabled()), parse_mode="HTML")
-    @dp.callback_query(F.data == "tasks_toggle")
+    
+@dp.callback_query(F.data == "tasks_toggle")
 async def tasks_toggle(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         return
