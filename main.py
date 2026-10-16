@@ -220,6 +220,25 @@ def build_priv_buttons():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ============ BOTOHUB (ОП) ============
+def bh_enabled():
+    return get_setting("botohub_enabled") == "1"
+
+
+async def bh_get_tasks(chat_id, count):
+    if not BOTOHUB_TOKEN:
+        return {"tasks": [], "completed": True, "skip": True}
+    payload = {"chat_id": chat_id, "max_op": count}
+    headers = {"Auth": BOTOHUB_TOKEN, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(BOTOHUB_URL, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=15)) as r:
+                return await r.json()
+    except Exception as e:
+        print("Botohub ОП error:", e)
+        return {"tasks": [], "completed": True, "skip": True}
+
 # ============ СБОР ОП (BOTOHUB) ============
 async def _get_botohub_pending(user_id):
     if not (bh_enabled() and BOTOHUB_TOKEN):
