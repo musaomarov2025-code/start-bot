@@ -988,7 +988,9 @@ async def piarflow_check_cb(call: CallbackQuery):
 
     data = await piarflow_check(user_id, [link])
     sponsors = data.get("sponsors", []) or []
-    ok = bool(sponsors) and all(s.get("status") == "subscribed" for s in sponsors)
+    ok = bool(sponsors) and all(
+        s.get("status") in ("subscribed", "not_counted") for s in sponsors
+    )
 
     if not ok:
         await call.answer("❌ Подпишись и попробуй ещё раз", show_alert=True)
