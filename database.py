@@ -56,7 +56,6 @@ def init_db():
         PRIMARY KEY (code, op_key)
     )""")
 
-    # === TGRASS: выполненные задания ===
     cur.execute("""CREATE TABLE IF NOT EXISTS task_completed (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -66,6 +65,15 @@ def init_db():
     )""")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_task_completed_user ON task_completed(user_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_task_completed_date ON task_completed(done_at)")
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS piarflow_offers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        link TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT
+    )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pf_offers_user ON piarflow_offers(user_id)")
 
     cur.execute("PRAGMA table_info(promos)")
     cols = {r[1] for r in cur.fetchall()}
@@ -456,7 +464,7 @@ def get_top_refs(limit=10):
     return rows
 
 
-# ================== TASKS (TGRASS STATS) ==================
+# ================== TASKS STATS ==================
 def mark_task_completed(user_id, offer_id, reward):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -657,7 +665,7 @@ def activate_promo_after_op(code, user_id):
     return calc
 
 
-# ================== CUSTOM OPS (не используются, оставлены) ==================
+# ================== CUSTOM OPS ==================
 def add_custom_op(title, link, op_type):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -702,7 +710,7 @@ def bh_reward_was_given(user_id, link):
     return row is not None
 
 
-# ================== CUSTOM TASKS (не используются, оставлены) ==================
+# ================== CUSTOM TASKS ==================
 def add_custom_task(title, link, check_type="bot", check_target=""):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -972,3 +980,65 @@ def delete_waiting_withdraw(user_id):
     cur.execute("DELETE FROM withdraw_waiting WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+
+
+# ================== PIARFLOW OFFERS ==================
+def pf_save_offers(user_id, links):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM piarflow_offers WHERE user_id = ?", (user_id,))
+    now = datetime.now().isoformat()
+    for link in links:
+        cur.execute(
+            "INSERT INTO piarflow_offers (user_id, link, status, created_at) VALUES (?, ?, 'pending', ?)",
+            (user_id, link, now))
+    conn.commit()
+    conn.close()
+
+
+def pf_get_next_offer(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, link FROM piarflow_offers WHERE user_id = ? AND status = 'pending' ORDER BY id LIMIT 1",
+        (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def pf_mark_offer(offer_id, status):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("UPDATE piarflow_offers SET status = ? WHERE id = ?", (status, offer_id))
+    conn.commit()
+    conn.close()
+
+
+def pf_restore_skipped_if_old(user_id, hours=1):
+    threshold = (datetime.now() - timedelta(hours=hours)).isoformat()
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE piarflow_offers SET status = 'pending' WHERE user_id = ? AND status = 'skipped' AND created_at < ?",
+        (user_id, threshold))
+    conn.commit()
+    conn.close()
+
+
+def pf_count_pending(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM piarflow_offers WHERE user_id = ? AND status = 'pending'", (user_id,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
+
+
+def pf_count_total(user_id):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM piarflow_offers WHERE user_id = ?", (user_id,))
+    n = cur.fetchone()[0]
+    conn.close()
+    return n
