@@ -868,7 +868,6 @@ async def ad_stats_cmd(message: Message):
 
 
 # ============ ЗАДАНИЯ (PIARFLOW) ============
-# ============ ЗАДАНИЯ (PIARFLOW) ============
 async def _show_piarflow_tasks(message, user_id, chat_id):
     # 1. Восстановить пропущенные (если прошёл час)
     try:
@@ -1021,7 +1020,177 @@ async def piarflow_check_cb(call: CallbackQuery):
 
     await asyncio.sleep(1)
     await _show_piarflow_tasks(call.message, user_id, user_id)
-    
+
+# ============ ВЫВОД ============
+async def _show_gifts_with_video(chat_id, user_id):
+    video_id = get_setting("withdraw_video_id")
+    kb = gifts_kb()
+    caption = '<tg-emoji emoji-id="5427236501903655352">❣️</tg-emoji> <b>Выбери подарок</b>'
+    try:
+        if video_id:
+            await bot.send_video(
+                chat_id=chat_id, video=video_id,
+                caption=caption, reply_markup=kb, parse_mode="HTML")
+        else:
+            await bot.send_message(chat_id, caption, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        print("video send error:", e)
+        try:
+            await bot.send_message(chat_id, caption, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+
+
+@dp.message(F.text == "Вывести звёзды")
+async def withdraw(message: Message, state: FSMContext):
+    if not await _guard_ops(message):
+        return
+    await state.clear()
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    w = get_waiting_withdraw(user_id)
+    if w:
+        await _show_friends_screen(message, user_id)
+        return
+
+    extra_items = []
+    if bh_enabled() and BOTOHUB_TOKEN:
+        try:
+            wd_count = int(get_setting("botohub_withdraw_count"))
+        except Exception:
+            wd_count = 6
+        data = await bh_get_tasks(user_id, wd_count)
+        tasks = data.get("tasks", [])
+        not_done = [t for t in tasks if not t.get("completed")]
+        for t in not_done:
+            link = t.get("url")
+            if link:
+                extra_items.append((f"bh_wd:{link}", "Подписаться", link, False))
+
+    if extra_items:
+        PENDING_WD[user_id] = "next_gift"
+        await bot.send_message(
+            chat_id, get_setting("botohub_text"),
+            reply_markup=op_screen_kb(extra_items, confirm_callback="op_check_wd"),
+            parse_mode="HTML")
+        return
+
+    await _show_gifts_with_video(chat_id, user_id)
+
+
+@dp.callback_query(F.data == "op_check_wd")
+async def op_check_wd_cb(call: CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    await asyncio.sleep(2)
+
+    still_not_done = []
+    if bh_enabled() and BOTOHUB_TOKEN:
+        try:
+            wd_count = int(get_setting("botohub_withdraw_count"))
+        except Exception:
+            wd_count = 6
+        data = await bh_get_tasks(user_id, wd_count)
+        tasks = data.get("tasks", [])
+        still_not_done = [t for t in tasks if not t.get("completed") and t.get("url")]
+
+    if still_not_done:
+        await call.answer("Ты ещё не подписался на все каналы", show_alert=True)
+        return
+
+    await call.answer()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+    await _show_gifts_with_video(user_id, user_id)
+
+
+@dp.callback_query(F.data.startswith("gift:"))
+async def cb_gift(call: CallbackQuery, state: FSMContext):
+    if not await _guard_ops(call):
+        return
+    key = call.data.split(":")[1]
+    if key not in GIFTS:
+        await call.answer("Подарок не найден")
+        return
+    name, price = GIFTS[key]
+    balance = get_balance(call.from_user.id)
+    if balance < price:
+        need_sum = price - balance
+        await call.answer(f"❌ Не хватает {need_sum} ⭐\nНужно: {price} ⭐\nУ тебя: {balance} ⭐",
+                          show_alert=True)
+        return
+
+    user_id = call.from_user.id
+    need = _friends_required()
+    refs_now = get_confirmed_refs_count(user_id)
+
+    if refs_now >= need:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await create_order(call, key)
+        return
+
+    set_waiting_withdraw(user_id, key)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await _show_friends_screen(user_id, user_id)
+
+
+@dp.callback_query(F.data == "wd_friends_check")
+async def wd_friends_check_cb(call: CallbackQuery):
+    user_id = call.from_user.id
+    ok = await _check_and_fulfill_waiting(user_id)
+    await call.answer("Обновлено", show_alert=True)
+    if ok:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        return
+    w = get_waiting_withdraw(user_id)
+    if not w:
+        return
+    await _show_friends_screen(call, user_id, edit_message=True)
+
+
+async def create_order(call: CallbackQuery, key):
+    name, price = GIFTS[key]
+    gift_emoji_id = GIFTS_EMOJI.get(key, "")
+    balance = get_balance(call.from_user.id)
+    if balance < price:
+        await call.answer(f"❌ Нужно {price} ⭐", show_alert=True)
+        return
+    wid = create_withdrawal(call.from_user.id, price, key)
+    new_balance = get_balance(call.from_user.id)
+    uname = f"@{call.from_user.username}" if call.from_user.username else "без username"
+
+    text = (
+        f'<tg-emoji emoji-id="6026257381678124710">✅</tg-emoji> <b>Заявка #{wid} создана!</b>\n\n'
+        f'<tg-emoji emoji-id="5449800250032143374">🎁</tg-emoji> Подарок: '
+        f'<tg-emoji emoji-id="{gift_emoji_id}">🎁</tg-emoji> {name}\n'
+        f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Твой баланс: <b>{new_balance}</b> '
+        f'<tg-emoji emoji-id="6030656914247914196">⭐</tg-emoji>\n'
+        f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Ожидай — админ отправит подарок вручную.'
+    )
+    try:
+        await bot.send_message(call.from_user.id, text, parse_mode="HTML")
+    except Exception as e:
+        print("Ошибка юзеру:", e)
+    try:
+        await bot.send_message(ADMIN_ID,
+            f"💸 <b>Новая заявка #{wid}</b>\n\n👤 {uname}\n"
+            f"🆔 <code>{call.from_user.id}</code>\n🎁 {name}\n💰 {price} ⭐",
+            reply_markup=admin_wd_kb(wid), parse_mode="HTML")
+    except Exception as e:
+        print("Ошибка админу:", e)
+        
     # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
