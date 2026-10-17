@@ -49,6 +49,8 @@ from database import (
     get_task_stats, get_op_stats,
     get_pending_withdrawals_all, get_pending_withdrawal_by_id,
     count_pending_withdrawals, accept_all_pending, reject_all_pending,
+    pf_save_offers, pf_get_next_offer, pf_mark_offer,
+    pf_restore_skipped_if_old, pf_count_pending, pf_count_total,
 )
 from keyboards import (
     main_menu, earn_kb, profile_kb, gifts_kb, task_kb,
@@ -866,40 +868,52 @@ async def ad_stats_cmd(message: Message):
 
 
 # ============ ЗАДАНИЯ (PIARFLOW) ============
+# ============ ЗАДАНИЯ (PIARFLOW) ============
 async def _show_piarflow_tasks(message, user_id, chat_id):
-    data = await piarflow_get_sponsors(user_id, chat_id, max_sponsors=1)
+    # 1. Восстановить пропущенные (если прошёл час)
+    try:
+        pf_restore_skipped_if_old(user_id, hours=1)
+    except Exception as e:
+        print("pf_restore error:", e)
 
-    if data.get("status") != "ok":
-        await message.answer(
-            f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> '
-            f'<b>Ошибка сервиса заданий</b>\n\nПопробуй позже.',
-            parse_mode="HTML")
-        return
+    # 2. Есть ли pending офферы?
+    offer_id, link = pf_get_next_offer(user_id)
 
-    sponsors = data.get("sponsors", []) or []
+    # 3. Если нет — запросить новые 10 у PiarFlow
+    if not offer_id:
+        data = await piarflow_get_sponsors(user_id, chat_id, max_sponsors=10)
+        if data.get("status") != "ok":
+            await message.answer(
+                f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> '
+                f'<b>Ошибка сервиса заданий</b>\n\nПопробуй позже.',
+                parse_mode="HTML")
+            return
 
-    offer = None
-    for s in sponsors:
-        if s.get("status") == "unsubscribed" and s.get("link"):
-            offer = s
-            break
+        sponsors = data.get("sponsors", []) or []
+        links = [s["link"] for s in sponsors if s.get("link")]
+        if not links:
+            await message.answer(
+                f'<tg-emoji emoji-id="5350460637182993292">🎉</tg-emoji> '
+                f'<b>Ты молодец, выполнены все доступные задания!</b>\n\n'
+                f'<tg-emoji emoji-id="5920433463428650761">🔄</tg-emoji> '
+                f'Новые задания скоро появятся…',
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Обновить задания",
+                                          callback_data="piarflow_refresh",
+                                          icon_custom_emoji_id="5386367538735104399")]
+                ]),
+                parse_mode="HTML")
+            return
 
-    if not offer:
-        await message.answer(
-            f'<tg-emoji emoji-id="5350460637182993292">🎉</tg-emoji> '
-            f'<b>Ты молодец, выполнены все доступные задания!</b>\n\n'
-            f'<tg-emoji emoji-id="5920433463428650761">🔄</tg-emoji> '
-            f'Новые задания скоро появятся…',
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Обновить задания",
-                                      callback_data="piarflow_refresh",
-                                      icon_custom_emoji_id="5386367538735104399")]
-            ]),
-            parse_mode="HTML")
-        return
+        pf_save_offers(user_id, links)
+        offer_id, link = pf_get_next_offer(user_id)
 
+        if not offer_id:
+            await message.answer("Ошибка: не удалось сохранить офферы.")
+            return
+
+    # 4. Показываем текущий оффер
     reward = int(get_setting("task_reward") or 5)
-    link = offer.get("link")
 
     text = (
         f'<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji> '
@@ -946,33 +960,30 @@ async def piarflow_refresh(call: CallbackQuery):
 
 @dp.callback_query(F.data == "piarflow_skip")
 async def piarflow_skip(call: CallbackQuery):
+    user_id = call.from_user.id
     if not await _guard_ops(call):
         return
+
+    # Найти текущий pending оффер и пометить как skipped
+    offer_id, link = pf_get_next_offer(user_id)
+    if offer_id:
+        pf_mark_offer(offer_id, "skipped")
+
     try:
         await call.message.delete()
     except Exception:
         pass
-    await _show_piarflow_tasks(call.message, call.from_user.id, call.from_user.id)
+
+    await _show_piarflow_tasks(call.message, user_id, user_id)
 
 
 @dp.callback_query(F.data == "piarflow_check")
 async def piarflow_check_cb(call: CallbackQuery):
     user_id = call.from_user.id
 
-    link = None
-    try:
-        for row in call.message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.url:
-                    link = btn.url
-                    break
-            if link:
-                break
-    except Exception:
-        pass
-
-    if not link:
-        await call.answer("Ошибка: нет ссылки задания", show_alert=True)
+    offer_id, link = pf_get_next_offer(user_id)
+    if not offer_id:
+        await call.answer("Задание не найдено, обнови", show_alert=True)
         return
 
     data = await piarflow_check(user_id, [link])
@@ -983,9 +994,14 @@ async def piarflow_check_cb(call: CallbackQuery):
         await call.answer("❌ Подпишись и попробуй ещё раз", show_alert=True)
         return
 
+    # Награда
     reward = int(get_setting("task_reward") or 5)
     add_balance(user_id, reward)
     add_ad_stars(user_id, reward)
+    mark_task_completed(user_id, offer_id, reward)
+
+    # Помечаем как пройденный
+    pf_mark_offer(offer_id, "subscribed")
 
     balance = get_balance(user_id)
     try:
@@ -1001,7 +1017,9 @@ async def piarflow_check_cb(call: CallbackQuery):
         f'<tg-emoji emoji-id="5920433463428650761">⌛</tg-emoji> Загружаю следующее задание...',
         parse_mode="HTML")
 
+    await asyncio.sleep(1)
     await _show_piarflow_tasks(call.message, user_id, user_id)
+    
     # ================== АДМИНКА ==================
 @dp.message(Command("admin"))
 async def admin(message: Message, state: FSMContext):
